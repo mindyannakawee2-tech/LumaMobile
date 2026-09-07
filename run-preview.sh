@@ -14,6 +14,5 @@ if [ -z "$BIN" ]; then
     exit 1
 fi
 
-export QSG_RHI_BACKEND=software
 
 exec "$BIN"

@@ -66,6 +66,9 @@ add_if_available qml6-module-qtquick-controls
 add_if_available qml6-module-qtquick-templates
 add_if_available qml6-module-qtqml
 add_if_available qml6-module-qtqml-workerscript
+add_if_available qt6-webengine-dev
+add_if_available qml6-module-qtwebengine
+
 
 # LumaVM frontend dependencies.
 add_if_available gir1.2-gtk-3.0

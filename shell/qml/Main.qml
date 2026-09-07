@@ -1273,4 +1273,31 @@ Window {
             }
         }
     }
+
+
+    // ========================================================
+    // Luma on-screen keyboard
+    // ========================================================
+
+    // LUMA_KEYBOARD_01
+
+    LumaKeyboard {
+
+        id: lumaKeyboard
+
+
+        anchors {
+            left: parent.left
+            right: parent.right
+            bottom: parent.bottom
+        }
+
+
+        z: 5000
+
+
+        visible:
+            LumaInput.inputActive
+    }
+
 }

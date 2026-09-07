@@ -1,12 +1,17 @@
 #include <QGuiApplication>
+
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+
 #include <QWindow>
 #include <QUrl>
 #include <QString>
 #include <QDebug>
 
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
+
 #include "SystemBackend.h"
+#include "InputBackend.h"
 
 
 int main(
@@ -14,14 +19,19 @@ int main(
     char *argv[]
 )
 {
+    QtWebEngineQuick::initialize();
+
+
     QGuiApplication app(
         argc,
         argv
     );
 
+
     app.setApplicationName(
         "LumaShell"
     );
+
 
     app.setOrganizationName(
         "Luma"
@@ -29,6 +39,8 @@ int main(
 
 
     SystemBackend systemBackend;
+
+    InputBackend inputBackend;
 
 
     QQmlApplicationEngine engine;
@@ -38,6 +50,13 @@ int main(
         ->setContextProperty(
             "LumaSystem",
             &systemBackend
+        );
+
+
+    engine.rootContext()
+        ->setContextProperty(
+            "LumaInput",
+            &inputBackend
         );
 
 
@@ -75,6 +94,7 @@ int main(
         engine.rootObjects()
             .isEmpty()
     ) {
+
         qCritical()
             << "LumaShell failed to load Main.qml";
 
@@ -83,9 +103,9 @@ int main(
 
 
     /*
-     * Host development stays windowed.
+     * Host development remains windowed.
      *
-     * Real LumaMobile boot becomes full-screen.
+     * Real LumaMobile boots full-screen.
      */
 
     if (
@@ -105,10 +125,8 @@ int main(
             );
 
 
-        if (window) {
-
+        if (window)
             window->showFullScreen();
-        }
     }
 
 

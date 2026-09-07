@@ -309,84 +309,23 @@ Item {
             threshold
         ) {
 
-            const app =
-                loader.item
-
-
-            // ================================================
-            // INTERNAL APP BACK HAS PRIORITY
-            //
-            // Browser:
-            //
-            // page 3 -> page 2 -> page 1 -> Home
-            //
-            // Settings:
-            //
-            // Wi-Fi -> Settings -> Home
-            //
-            // There is deliberately NO cross-app history.
-            // ================================================
-
-            if (
-                app &&
-                app.canGoBack === true &&
-                typeof app.goBack === "function"
-            ) {
-
-                console.log(
-                    "[LumaNav] swipe -> internal app Back"
-                )
-
-
-                // Return the app surface to its normal position.
-                //
-                // Do NOT throw the application away.
-
-                x = 0
-                opacity = 1
-
-
-                app.goBack()
-
-                return
-            }
-
-
-            // ================================================
-            // APP ROOT
-            //
-            // There is nothing left inside this application
-            // to go back to.
-            //
-            // Back therefore means HOME.
-            // ================================================
-
-            console.log(
-                "[LumaNav] swipe -> app root -> Home"
-            )
-
+            // Throw app off-screen.
 
             x =
-                Math.ceil(
-                    parent.width
-                ) + 2
+                Math.ceil(parent.width) + 2
 
             opacity = 1
-
 
             backCloseTimer.restart()
 
         } else {
 
-            // ================================================
-            // GESTURE CANCELLED
-            // ================================================
+            // Gesture cancelled.
 
             x = 0
             opacity = 1
         }
     }
-
 
 
     // ========================================================
