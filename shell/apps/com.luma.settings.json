@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.settings",
+  "title": "Settings",
+  "glyph": "S",
+  "accent": "#777781",
+  "icon": "../qml/assets/icons/settings.svg",
+  "entry": "../qml/SettingsApp.qml",
+  "order": 80,
+  "home": true,
+  "dock": true
+}

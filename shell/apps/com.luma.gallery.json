@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.gallery",
+  "title": "Gallery",
+  "glyph": "G",
+  "accent": "#EF8673",
+  "icon": "../qml/assets/icons/gallery.svg",
+  "entry": "../qml/GalleryApp.qml",
+  "order": 30,
+  "home": true,
+  "dock": true
+}

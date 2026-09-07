@@ -12,6 +12,7 @@
 
 #include "SystemBackend.h"
 #include "InputBackend.h"
+#include "AppRegistry.h"
 
 
 int main(
@@ -42,6 +43,8 @@ int main(
 
     InputBackend inputBackend;
 
+    AppRegistry appRegistry;
+
 
     QQmlApplicationEngine engine;
 
@@ -57,6 +60,13 @@ int main(
         ->setContextProperty(
             "LumaInput",
             &inputBackend
+        );
+
+
+    engine.rootContext()
+        ->setContextProperty(
+            "LumaApps",
+            &appRegistry
         );
 
 
@@ -83,6 +93,11 @@ int main(
         << mainFile;
 
 
+    qInfo()
+        << "Luma applications:"
+        << appRegistry.apps().size();
+
+
     engine.load(
         QUrl::fromLocalFile(
             mainFile
@@ -101,12 +116,6 @@ int main(
         return 1;
     }
 
-
-    /*
-     * Host development remains windowed.
-     *
-     * Real LumaMobile boots full-screen.
-     */
 
     if (
         qEnvironmentVariableIsSet(

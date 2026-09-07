@@ -225,6 +225,73 @@ Item {
 
 
     // ========================================================
+    // Launch dynamically discovered application
+    // ========================================================
+
+    function launchUrl(
+        sourceUrl,
+        id,
+        title,
+        glyph,
+        accent,
+        ox,
+        oy,
+        ow,
+        oh
+    ) {
+
+        appId = id
+        appTitle = title
+        appGlyph = glyph
+        appAccent = accent
+
+        originX = ox
+        originY = oy
+        originWidth = ow
+        originHeight = oh
+
+
+        loader.sourceComponent = null
+        loader.source = sourceUrl
+
+
+        instant = true
+        draggingBack = false
+
+        active = true
+
+        x = originX
+        y = originY
+
+        width = originWidth
+        height = originHeight
+
+        cornerRadius = 22
+
+        opacity = 0.35
+
+
+        Qt.callLater(
+            function() {
+
+                instant = false
+
+                x = 0
+                y = 0
+
+                width = parent.width
+                height = parent.height
+
+                cornerRadius = 0
+
+                opacity = 1
+            }
+        )
+    }
+
+
+
+    // ========================================================
     // HOME
     //
     // Shrink the application back into its original icon.
@@ -400,6 +467,9 @@ Item {
 
 
         active = false
+
+        loader.source =
+            ""
 
         loader.sourceComponent =
             null

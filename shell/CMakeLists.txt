@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(
     LumaShell
-    VERSION 0.5
+    VERSION 0.6
     LANGUAGES CXX
 )
 
@@ -44,6 +44,9 @@ qt_add_executable(
 
     InputBackend.cpp
     InputBackend.h
+
+    AppRegistry.cpp
+    AppRegistry.h
 )
 
 
@@ -71,6 +74,18 @@ set(
 )
 
 
+set(
+
+    LUMASHELL_APP_DIR
+
+    "${CMAKE_CURRENT_SOURCE_DIR}/apps"
+
+    CACHE STRING
+
+    "Built-in Luma application manifest directory"
+)
+
+
 target_compile_definitions(
 
     lumashell
@@ -78,4 +93,6 @@ target_compile_definitions(
     PRIVATE
 
         LUMASHELL_QML_DIR="${LUMASHELL_QML_DIR}"
+
+        LUMASHELL_APP_DIR="${LUMASHELL_APP_DIR}"
 )

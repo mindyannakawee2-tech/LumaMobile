@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.music",
+  "title": "Music",
+  "glyph": "M",
+  "accent": "#D46D96",
+  "icon": "../qml/assets/icons/music.svg",
+  "entry": "../qml/MusicApp.qml",
+  "order": 60,
+  "home": true,
+  "dock": false
+}

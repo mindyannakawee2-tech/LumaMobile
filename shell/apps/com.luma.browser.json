@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.browser",
+  "title": "Browser",
+  "glyph": "B",
+  "accent": "#648FE9",
+  "icon": "../qml/assets/icons/browser.svg",
+  "entry": "../qml/BrowserApp.qml",
+  "order": 50,
+  "home": true,
+  "dock": false
+}

@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.store",
+  "title": "Store",
+  "glyph": "S",
+  "accent": "#675FDA",
+  "icon": "../qml/assets/icons/store.svg",
+  "entry": "../qml/StoreApp.qml",
+  "order": 70,
+  "home": true,
+  "dock": false
+}

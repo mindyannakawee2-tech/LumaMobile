@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.files",
+  "title": "Files",
+  "glyph": "F",
+  "accent": "#E0A947",
+  "icon": "../qml/assets/icons/files.svg",
+  "entry": "../qml/FilesApp.qml",
+  "order": 40,
+  "home": true,
+  "dock": false
+}

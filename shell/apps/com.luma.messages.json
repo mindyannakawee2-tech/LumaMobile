@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.messages",
+  "title": "Messages",
+  "glyph": "M",
+  "accent": "#53A7F5",
+  "icon": "../qml/assets/icons/messages.svg",
+  "entry": "../qml/MessagesApp.qml",
+  "order": 20,
+  "home": true,
+  "dock": true
+}

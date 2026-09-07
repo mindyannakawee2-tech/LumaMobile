@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.phone",
+  "title": "Phone",
+  "glyph": "P",
+  "accent": "#55BC76",
+  "icon": "../qml/assets/icons/phone.svg",
+  "entry": "../qml/PhoneApp.qml",
+  "order": 10,
+  "home": true,
+  "dock": true
+}
