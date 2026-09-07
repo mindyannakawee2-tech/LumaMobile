@@ -6,6 +6,63 @@ It is **not based on Android**. LumaMobile is building its own mobile shell, pla
 
 > **Status:** Early development / experimental. LumaMobile is not ready for everyday use yet.
 
+## Quick start
+
+The easiest way to try the current LumaMobile UI is the Linux host preview.
+
+### Supported setup hosts
+
+The automated setup currently supports Debian-family distributions such as:
+
+- Linux Mint
+- Ubuntu
+- Debian
+
+Clone the project:
+
+```bash
+git clone https://github.com/mindyannakawee2-tech/LumaMobile.git
+cd LumaMobile
+```
+
+Run the setup:
+
+```bash
+bash setup.sh
+```
+
+The setup script installs the required development packages and builds:
+
+- LumaShell
+- Luma Framework host tools
+- LMS host tools
+- the C++ Luma SDK static library
+- dependencies needed by LumaVM
+
+Then launch the host preview:
+
+```bash
+./run-preview.sh
+```
+
+If the executable bit was not preserved by your download method, use:
+
+```bash
+bash run-preview.sh
+```
+
+### Full LumaVM boot
+
+LumaVM is included in `tools/lumavm/`, but a complete VM boot currently also requires generated artifacts that are intentionally not committed to Git:
+
+```text
+kernel/linux-6.18.49/arch/x86/boot/bzImage
+output/lumamobile-initramfs.cpio.gz
+output/lumadata.img
+```
+
+So for new users, the **host preview is currently the recommended way to try LumaMobile**. A reproducible full-OS build script is planned.
+
 ## Vision
 
 LumaMobile aims to provide a complete Linux-native mobile platform with a consistent application model and a UI designed for phones from the start.
@@ -59,6 +116,8 @@ LumaMobile/
 ├── sdk/           # Luma SDK
 ├── services/      # System and ecosystem services (including LMS)
 ├── shell/         # LumaShell
+├── setup.sh       # One-command Debian/Ubuntu/Mint setup
+├── run-preview.sh # Launch the host LumaShell preview
 └── tools/
     ├── lpk/       # LPK tooling
     └── lumavm/    # LumaVM
@@ -75,6 +134,8 @@ Generated root filesystems, disk images, build output, downloaded upstream sourc
 - [x] LMS prototype
 - [x] C++ SDK prototype
 - [x] LPK prototype
+- [x] Host setup + preview workflow
+- [ ] Reproducible full OS build from a fresh clone
 - [ ] Complete application navigation model
 - [ ] Luma on-screen keyboard
 - [ ] Persistent user storage workflow
@@ -105,7 +166,7 @@ The long-term goal is for application developers to use the Luma SDK without nee
 
 LumaMobile currently targets an x86_64 VM for primary development and testing.
 
-The project is still changing quickly, so build instructions and APIs may change between commits. More complete developer documentation will be added as the build system stabilizes.
+The project is still changing quickly, so build instructions and APIs may change between commits.
 
 ## Contributing
 
