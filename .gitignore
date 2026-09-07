@@ -113,3 +113,6 @@ kernel/*.tar.gz
 kernel/*.tar.xz
 kernel/*.tar.zst
 
+
+# Local Easter-egg backups
+*.before-easter-*

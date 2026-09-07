@@ -19,7 +19,18 @@ Item {
 
 
     function goBack() {
-        page = "root"
+
+        if (
+            page === "easteregg"
+        ) {
+
+            page = "about"
+
+        } else {
+
+            page = "root"
+        }
+
         refresh()
     }
 
@@ -91,6 +102,9 @@ Item {
 
             case "about":
                 return "About LumaMobile"
+
+            case "easteregg":
+                return "LumaMobile"
 
             default:
                 return "Settings"
@@ -1047,14 +1061,81 @@ Item {
                     spacing: 10
 
 
-                    Text {
-                        text: "LumaMobile"
+                    Item {
 
-                        color: "#202026"
+                        width:
+                            parent.width
 
-                        font {
-                            pixelSize: 22
-                            weight: Font.DemiBold
+                        height: 34
+
+
+                        Text {
+
+                            anchors {
+                                left: parent.left
+                                verticalCenter:
+                                    parent.verticalCenter
+                            }
+
+
+                            text:
+                                "LumaMobile"
+
+
+                            color:
+                                "#202026"
+
+
+                            font {
+                                pixelSize: 22
+                                weight: Font.DemiBold
+                            }
+                        }
+
+
+                        MouseArea {
+
+                            id: aboutEasterTap
+
+                            anchors.fill:
+                                parent
+
+
+                            property int taps: 0
+
+
+                            Timer {
+
+                                id: easterTapReset
+
+                                interval: 1700
+
+                                repeat: false
+
+
+                                onTriggered:
+                                    aboutEasterTap.taps = 0
+                            }
+
+
+                            onClicked: {
+
+                                taps += 1
+
+                                easterTapReset.restart()
+
+
+                                if (
+                                    taps >= 7
+                                ) {
+
+                                    taps = 0
+
+                                    root.openPage(
+                                        "easteregg"
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -1098,6 +1179,22 @@ Item {
                     }
                 }
             }
+
+
+            LumaEasterEgg {
+
+                visible:
+                    root.page === "easteregg"
+
+
+                width:
+                    parent.width
+
+                height:
+                    770
+            }
+
+
         }
     }
 }
