@@ -1,0 +1,11 @@
+lpk_format=1
+id=com.luma.hello
+name=Hello Luma
+version=1.0.0
+architecture=x86_64
+type=native
+entry=bin/hello-luma
+sdk_version=0.1.0
+framework_abi=2
+lms_abi=1
+permissions=lms.notifications.post,lms.apps.register

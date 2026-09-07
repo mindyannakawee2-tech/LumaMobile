@@ -1,0 +1,878 @@
+#!/usr/bin/env python3
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("GtkVnc", "2.0")
+
+from gi.repository import Gtk, GtkVnc, GLib, Gdk
+
+import os
+import signal
+import subprocess
+from pathlib import Path
+
+
+ROOT = Path.home() / "LumaMobile"
+
+KERNEL = (
+    ROOT
+    / "kernel"
+    / "linux-6.18.49"
+    / "arch"
+    / "x86"
+    / "boot"
+    / "bzImage"
+)
+
+INITRAMFS = (
+    ROOT
+    / "output"
+    / "lumamobile-initramfs.cpio.gz"
+)
+
+LOGDIR = ROOT / "logs"
+
+QEMU_LOG = LOGDIR / "lumavm-qemu.log"
+SERIAL_LOG = LOGDIR / "lumavm-serial.log"
+
+# :7 = TCP 5907
+VNC_DISPLAY = 7
+VNC_PORT = 5900 + VNC_DISPLAY
+
+
+CSS = b"""
+window {
+    background: #111116;
+}
+
+headerbar {
+    background: #202027;
+    color: white;
+    border-bottom: 1px solid #303039;
+}
+
+headerbar button {
+    border-radius: 10px;
+}
+
+#vmframe {
+    background: #08080b;
+}
+
+#sidebar {
+    background: #17171d;
+    border-left: 1px solid #303039;
+}
+
+#status {
+    color: #bcbcc5;
+    padding: 5px 10px;
+}
+
+#running {
+    color: #65d58a;
+}
+
+#stopped {
+    color: #e98982;
+}
+
+textview {
+    background: #111116;
+    color: #d4d4dc;
+    font-family: monospace;
+    font-size: 10pt;
+}
+"""
+
+
+class LumaVM(Gtk.ApplicationWindow):
+
+    def __init__(self, app):
+        super().__init__(
+            application=app
+        )
+
+        self.set_title("LumaVM")
+        self.set_default_size(
+            1180,
+            860
+        )
+
+        self.set_size_request(
+            760,
+            600
+        )
+
+        self.qemu = None
+
+        self.connect(
+            "delete-event",
+            self.on_close
+        )
+
+        self.build_ui()
+
+        GLib.timeout_add(
+            500,
+            self.update_state
+        )
+
+        GLib.timeout_add(
+            600,
+            self.update_serial
+        )
+
+        # Automatically boot LumaMobile.
+        GLib.timeout_add(
+            400,
+            self.autostart
+        )
+
+
+    # ========================================================
+    # UI
+    # ========================================================
+
+    def build_ui(self):
+
+        header = Gtk.HeaderBar()
+
+        header.set_show_close_button(
+            True
+        )
+
+        header.props.title = "LumaVM"
+        header.props.subtitle = (
+            "LumaMobile Development Machine"
+        )
+
+        self.set_titlebar(header)
+
+
+        self.start_button = Gtk.Button(
+            label="Start"
+        )
+
+        self.start_button.connect(
+            "clicked",
+            lambda *_:
+                self.start_vm()
+        )
+
+
+        self.restart_button = Gtk.Button(
+            label="Restart"
+        )
+
+        self.restart_button.connect(
+            "clicked",
+            lambda *_:
+                self.restart_vm()
+        )
+
+
+        self.stop_button = Gtk.Button(
+            label="Stop"
+        )
+
+        self.stop_button.connect(
+            "clicked",
+            lambda *_:
+                self.stop_vm()
+        )
+
+
+        self.log_button = Gtk.ToggleButton(
+            label="Serial"
+        )
+
+        self.log_button.connect(
+            "toggled",
+            self.toggle_sidebar
+        )
+
+
+        header.pack_start(
+            self.start_button
+        )
+
+        header.pack_start(
+            self.restart_button
+        )
+
+        header.pack_start(
+            self.stop_button
+        )
+
+        header.pack_end(
+            self.log_button
+        )
+
+
+        root = Gtk.Box(
+            orientation=
+                Gtk.Orientation.VERTICAL
+        )
+
+        self.add(root)
+
+
+        self.status = Gtk.Label(
+            label="LumaMobile stopped"
+        )
+
+        self.status.set_xalign(0)
+
+        self.status.set_name(
+            "status"
+        )
+
+        root.pack_start(
+            self.status,
+            False,
+            False,
+            0
+        )
+
+
+        self.paned = Gtk.Paned(
+            orientation=
+                Gtk.Orientation.HORIZONTAL
+        )
+
+        root.pack_start(
+            self.paned,
+            True,
+            True,
+            0
+        )
+
+
+        # ----------------------------------------------------
+        # VM display
+        # ----------------------------------------------------
+
+        frame = Gtk.Box()
+        frame.set_name("vmframe")
+
+        self.paned.pack1(
+            frame,
+            True,
+            False
+        )
+
+
+        self.display = GtkVnc.Display()
+
+        # Scale portrait LumaMobile into our desktop window.
+        try:
+            self.display.set_scaling(
+                True
+            )
+        except Exception:
+            pass
+
+        # IMPORTANT:
+        # Always draw the cursor locally in LumaVM.
+        try:
+            self.display.set_pointer_local(
+                True
+            )
+        except Exception:
+            pass
+
+        try:
+            self.display.set_keyboard_grab(
+                False
+            )
+        except Exception:
+            pass
+
+        try:
+            self.display.set_pointer_grab(
+                False
+            )
+        except Exception:
+            pass
+
+
+        for signal_name, callback in (
+            (
+                "vnc-initialized",
+                self.on_vnc_initialized
+            ),
+            (
+                "vnc-disconnected",
+                self.on_vnc_disconnected
+            ),
+        ):
+            try:
+                self.display.connect(
+                    signal_name,
+                    callback
+                )
+            except Exception:
+                pass
+
+
+        frame.pack_start(
+            self.display,
+            True,
+            True,
+            0
+        )
+
+
+        # ----------------------------------------------------
+        # Serial console sidebar
+        # ----------------------------------------------------
+
+        self.sidebar = Gtk.Box(
+            orientation=
+                Gtk.Orientation.VERTICAL
+        )
+
+        self.sidebar.set_name(
+            "sidebar"
+        )
+
+        self.sidebar.set_size_request(
+            360,
+            -1
+        )
+
+
+        sidebar_title = Gtk.Label(
+            label="LumaMobile Serial Log"
+        )
+
+        sidebar_title.set_xalign(0)
+        sidebar_title.set_margin_start(12)
+        sidebar_title.set_margin_top(10)
+        sidebar_title.set_margin_bottom(10)
+
+
+        self.sidebar.pack_start(
+            sidebar_title,
+            False,
+            False,
+            0
+        )
+
+
+        scroll = Gtk.ScrolledWindow()
+
+        self.serial_text = Gtk.TextView()
+
+        self.serial_text.set_editable(
+            False
+        )
+
+        self.serial_text.set_cursor_visible(
+            False
+        )
+
+
+        scroll.add(
+            self.serial_text
+        )
+
+
+        self.sidebar.pack_start(
+            scroll,
+            True,
+            True,
+            0
+        )
+
+
+        self.paned.pack2(
+            self.sidebar,
+            False,
+            False
+        )
+
+
+        self.sidebar.hide()
+
+
+    # ========================================================
+    # QEMU backend
+    # ========================================================
+
+    def qemu_command(self):
+
+        return [
+            "qemu-system-x86_64",
+
+            "-name",
+            "LumaMobile",
+
+            "-enable-kvm",
+
+            "-machine",
+            "q35",
+
+            "-cpu",
+            "host",
+
+            "-smp",
+            "4",
+
+            "-m",
+            "2048",
+
+            "-kernel",
+            str(KERNEL),
+
+            "-initrd",
+            str(INITRAMFS),
+
+            "-append",
+            (
+                "console=ttyS0 "
+                "rdinit=/init "
+                "loglevel=4 "
+                "video=Virtual-1:720x1280@60"
+            ),
+
+            "-device",
+            "virtio-vga",
+
+            # Touchscreen-like absolute pointing.
+            "-device",
+            "virtio-tablet-pci",
+
+            # QEMU has NO window.
+            "-display",
+            "none",
+
+            # LumaVM receives the VM framebuffer.
+            "-vnc",
+            f"127.0.0.1:{VNC_DISPLAY}",
+
+            "-serial",
+            f"file:{SERIAL_LOG}",
+
+            "-monitor",
+            "none",
+
+            "-no-reboot",
+        ]
+
+
+    def start_vm(self):
+
+        if (
+            self.qemu is not None
+            and self.qemu.poll() is None
+        ):
+            return
+
+
+        if not KERNEL.exists():
+
+            self.status.set_text(
+                "Kernel image missing"
+            )
+
+            return
+
+
+        if not INITRAMFS.exists():
+
+            self.status.set_text(
+                "LumaMobile initramfs missing"
+            )
+
+            return
+
+
+        LOGDIR.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+
+        try:
+            SERIAL_LOG.unlink()
+        except FileNotFoundError:
+            pass
+
+
+        log = open(
+            QEMU_LOG,
+            "w"
+        )
+
+
+        try:
+
+            self.qemu = subprocess.Popen(
+                self.qemu_command(),
+
+                stdin=subprocess.DEVNULL,
+
+                stdout=log,
+
+                stderr=subprocess.STDOUT,
+
+                start_new_session=True
+            )
+
+        except Exception as exc:
+
+            log.close()
+
+            self.status.set_text(
+                f"Could not start VM: {exc}"
+            )
+
+            return
+
+
+        # Child owns the duplicated file descriptor.
+        log.close()
+
+
+        self.status.set_text(
+            "Starting LumaMobile…"
+        )
+
+
+        # QEMU exposes VNC almost immediately.
+        GLib.timeout_add(
+            800,
+            self.connect_display
+        )
+
+
+    def stop_vm(self):
+
+        if (
+            self.qemu is None
+            or self.qemu.poll() is not None
+        ):
+            self.qemu = None
+            return
+
+
+        try:
+
+            os.killpg(
+                os.getpgid(
+                    self.qemu.pid
+                ),
+                signal.SIGTERM
+            )
+
+            self.qemu.wait(
+                timeout=3
+            )
+
+        except Exception:
+
+            try:
+                os.killpg(
+                    os.getpgid(
+                        self.qemu.pid
+                    ),
+                    signal.SIGKILL
+                )
+            except Exception:
+                pass
+
+
+        self.qemu = None
+
+
+        try:
+            self.display.close()
+        except Exception:
+            pass
+
+
+        self.status.set_text(
+            "LumaMobile stopped"
+        )
+
+
+    def restart_vm(self):
+
+        self.stop_vm()
+
+        GLib.timeout_add(
+            500,
+            self._restart_after_stop
+        )
+
+
+    def _restart_after_stop(self):
+
+        self.start_vm()
+
+        return False
+
+
+    def autostart(self):
+
+        self.start_vm()
+
+        return False
+
+
+    # ========================================================
+    # Embedded display
+    # ========================================================
+
+    def connect_display(self):
+
+        if (
+            self.qemu is None
+            or self.qemu.poll() is not None
+        ):
+            return False
+
+
+        try:
+
+            opened = self.display.open_host(
+                "127.0.0.1",
+                str(VNC_PORT)
+            )
+
+            if not opened:
+
+                # Listener may not be ready yet.
+                GLib.timeout_add(
+                    600,
+                    self.connect_display
+                )
+
+        except Exception:
+
+            GLib.timeout_add(
+                600,
+                self.connect_display
+            )
+
+
+        return False
+
+
+    def on_vnc_initialized(
+        self,
+        *_args
+    ):
+
+        self.status.set_text(
+            "● LumaMobile running"
+        )
+
+
+    def on_vnc_disconnected(
+        self,
+        *_args
+    ):
+
+        if (
+            self.qemu is not None
+            and self.qemu.poll() is None
+        ):
+
+            self.status.set_text(
+                "VM running — display reconnecting…"
+            )
+
+            GLib.timeout_add(
+                800,
+                self.connect_display
+            )
+
+
+    # ========================================================
+    # Status / logs
+    # ========================================================
+
+    def update_state(self):
+
+        running = (
+            self.qemu is not None
+            and self.qemu.poll() is None
+        )
+
+
+        self.start_button.set_sensitive(
+            not running
+        )
+
+        self.restart_button.set_sensitive(
+            running
+        )
+
+        self.stop_button.set_sensitive(
+            running
+        )
+
+
+        if (
+            self.qemu is not None
+            and self.qemu.poll() is not None
+        ):
+
+            code = self.qemu.returncode
+
+            self.status.set_text(
+                f"LumaMobile stopped (backend exit {code})"
+            )
+
+            self.qemu = None
+
+
+        return True
+
+
+    def update_serial(self):
+
+        if not self.sidebar.get_visible():
+            return True
+
+
+        if not SERIAL_LOG.exists():
+            return True
+
+
+        try:
+
+            text = SERIAL_LOG.read_text(
+                errors="replace"
+            )
+
+        except Exception:
+
+            return True
+
+
+        # Don't make GTK hold an infinitely growing kernel log.
+        lines = text.splitlines()
+
+        if len(lines) > 500:
+            lines = lines[-500:]
+
+
+        output = "\n".join(lines)
+
+
+        buffer = (
+            self.serial_text
+                .get_buffer()
+        )
+
+        buffer.set_text(
+            output
+        )
+
+
+        mark = buffer.get_insert()
+
+        self.serial_text.scroll_mark_onscreen(
+            mark
+        )
+
+
+        return True
+
+
+    def toggle_sidebar(
+        self,
+        button
+    ):
+
+        if button.get_active():
+
+            self.sidebar.show_all()
+
+            self.paned.set_position(
+                max(
+                    500,
+                    self.get_allocated_width()
+                    - 360
+                )
+            )
+
+        else:
+
+            self.sidebar.hide()
+
+
+    def on_close(
+        self,
+        *_args
+    ):
+
+        self.stop_vm()
+
+        return False
+
+
+
+class LumaVMApplication(
+    Gtk.Application
+):
+
+    def __init__(self):
+
+        super().__init__(
+            application_id=
+                "com.luma.vm"
+        )
+
+
+    def do_startup(self):
+
+        Gtk.Application.do_startup(
+            self
+        )
+
+
+        css = Gtk.CssProvider()
+
+        css.load_from_data(
+            CSS
+        )
+
+
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(),
+            css,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+
+    def do_activate(self):
+
+        win = self.props.active_window
+
+        if not win:
+
+            win = LumaVM(
+                self
+            )
+
+
+        win.show_all()
+
+        # Sidebar should start closed.
+        win.sidebar.hide()
+
+        win.present()
+
+
+
+app = LumaVMApplication()
+
+raise SystemExit(
+    app.run(None)
+)

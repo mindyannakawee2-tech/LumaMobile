@@ -1,0 +1,115 @@
+# ============================================================
+# LumaMobile
+# Generated files / build output
+# ============================================================
+
+# OS images
+output/
+rootfs/
+
+*.img
+*.iso
+*.qcow2
+*.raw
+*.vdi
+*.vmdk
+
+# Initramfs
+*.cpio
+*.cpio.gz
+
+# ------------------------------------------------------------
+# Compiled Qt / C / C++
+# ------------------------------------------------------------
+
+shell/build/
+shell/build-os/
+
+build/
+cmake-build-*/
+
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.exe
+
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ------------------------------------------------------------
+# Temporary/cache
+# ------------------------------------------------------------
+
+.cache/
+tmp/
+temp/
+*.log
+*.pid
+
+# ------------------------------------------------------------
+# Editors
+# ------------------------------------------------------------
+
+.vscode/
+.idea/
+*~
+*.swp
+*.swo
+
+# ------------------------------------------------------------
+# Linux kernel
+#
+# Do not upload a complete upstream Linux source/build tree.
+# Keep LumaMobile configs and patches separately.
+# ------------------------------------------------------------
+
+kernel/linux-6.18.49/
+
+# Kernel build products
+*.ko
+*.mod
+*.mod.c
+*.cmd
+Module.symvers
+modules.order
+
+# ------------------------------------------------------------
+# LumaVM generated data
+# ------------------------------------------------------------
+
+tools/lumavm/*.pid
+tools/lumavm/*.log
+
+# ------------------------------------------------------------
+# Misc
+# ------------------------------------------------------------
+
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# Downloaded build dependencies
+# ============================================================
+
+cache/
+
+# Upstream Linux source archives
+kernel/*.tar
+kernel/*.tar.gz
+kernel/*.tar.xz
+kernel/*.tar.zst
+

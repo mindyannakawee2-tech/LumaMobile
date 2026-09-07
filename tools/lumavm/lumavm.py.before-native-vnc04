@@ -1,0 +1,1339 @@
+#!/usr/bin/env python3
+
+import gi
+
+gi.require_version(
+    "Gtk",
+    "3.0"
+)
+
+gi.require_version(
+    "GtkVnc",
+    "2.0"
+)
+
+from gi.repository import (
+    Gtk,
+    GtkVnc,
+    GLib,
+    Gdk
+)
+
+import os
+import signal
+import subprocess
+
+from pathlib import Path
+
+
+# ============================================================
+# Paths
+# ============================================================
+
+ROOT = (
+    Path.home()
+    / "LumaMobile"
+)
+
+KERNEL = (
+    ROOT
+    / "kernel"
+    / "linux-6.18.49"
+    / "arch"
+    / "x86"
+    / "boot"
+    / "bzImage"
+)
+
+INITRAMFS = (
+    ROOT
+    / "output"
+    / "lumamobile-initramfs.cpio.gz"
+)
+
+LOGDIR = (
+    ROOT
+    / "logs"
+)
+
+QEMU_LOG = (
+    LOGDIR
+    / "lumavm-qemu.log"
+)
+
+SERIAL_LOG = (
+    LOGDIR
+    / "lumavm-serial.log"
+)
+
+
+VNC_DISPLAY = 7
+VNC_PORT = 5900 + VNC_DISPLAY
+
+
+# ============================================================
+# UI
+# ============================================================
+
+CSS = b"""
+window {
+    background: #0b0b0e;
+}
+
+headerbar {
+    background: #202027;
+    color: white;
+    border-bottom: 1px solid #34343c;
+}
+
+#status {
+    color: #bbbbc5;
+    padding: 4px 10px;
+    background: #17171d;
+}
+
+#device-area {
+    background: #050507;
+}
+
+textview {
+    background: #111116;
+    color: #d7d7df;
+    font-family: monospace;
+}
+"""
+
+
+class LumaVM(Gtk.ApplicationWindow):
+
+    def __init__(self, app):
+
+        super().__init__(
+            application=app
+        )
+
+
+        # ----------------------------------------------------
+        # Compact phone-emulator size
+        #
+        # 720 x 1280 guest is 9:16.
+        #
+        # Around 450 x 800 displayed +
+        # header/status decorations.
+        # ----------------------------------------------------
+
+        self.set_title(
+            "LumaVM"
+        )
+
+        self.set_default_size(
+            470,
+            890
+        )
+
+        self.set_size_request(
+            420,
+            760
+        )
+
+
+        self.qemu = None
+
+        self.pointer_mask = 0
+
+        self.vnc_ready = False
+
+
+        self.connect(
+            "delete-event",
+            self.on_close
+        )
+
+
+        self.build_ui()
+
+
+        GLib.timeout_add(
+            500,
+            self.update_state
+        )
+
+
+        GLib.timeout_add(
+            600,
+            self.update_serial
+        )
+
+
+        GLib.timeout_add(
+            350,
+            self.autostart
+        )
+
+
+    # ========================================================
+    # UI
+    # ========================================================
+
+    def build_ui(self):
+
+        header = Gtk.HeaderBar()
+
+        header.set_show_close_button(
+            True
+        )
+
+        header.props.title = (
+            "LumaVM"
+        )
+
+        header.props.subtitle = (
+            "LumaMobile"
+        )
+
+        self.set_titlebar(
+            header
+        )
+
+
+        self.restart_button = Gtk.Button(
+            label="Restart"
+        )
+
+        self.restart_button.connect(
+            "clicked",
+            lambda *_:
+                self.restart_vm()
+        )
+
+
+        self.stop_button = Gtk.Button(
+            label="Stop"
+        )
+
+        self.stop_button.connect(
+            "clicked",
+            lambda *_:
+                self.stop_vm()
+        )
+
+
+        self.serial_button = Gtk.ToggleButton(
+            label="Serial"
+        )
+
+        self.serial_button.connect(
+            "toggled",
+            self.toggle_serial
+        )
+
+
+        header.pack_start(
+            self.restart_button
+        )
+
+        header.pack_start(
+            self.stop_button
+        )
+
+        header.pack_end(
+            self.serial_button
+        )
+
+
+        root = Gtk.Box(
+            orientation=
+                Gtk.Orientation.VERTICAL
+        )
+
+        self.add(
+            root
+        )
+
+
+        self.status = Gtk.Label(
+            label=
+                "Starting LumaMobile..."
+        )
+
+        self.status.set_xalign(
+            0
+        )
+
+        self.status.set_name(
+            "status"
+        )
+
+
+        root.pack_start(
+            self.status,
+            False,
+            False,
+            0
+        )
+
+
+        self.stack = Gtk.Stack()
+
+        root.pack_start(
+            self.stack,
+            True,
+            True,
+            0
+        )
+
+
+        # ====================================================
+        # DEVICE PAGE
+        # ====================================================
+
+        device_area = Gtk.Box()
+
+        device_area.set_name(
+            "device-area"
+        )
+
+
+        #
+        # AspectFrame ensures that even if somebody resizes
+        # LumaVM, the device remains 9:16.
+        #
+
+        aspect = Gtk.AspectFrame(
+            xalign=0.5,
+            yalign=0.5,
+            ratio=430.0 / 932.0,
+            obey_child=False
+        )
+
+        aspect.set_shadow_type(
+            Gtk.ShadowType.NONE
+        )
+
+
+        device_area.pack_start(
+            aspect,
+            True,
+            True,
+            0
+        )
+
+
+        # ====================================================
+        # Gtk overlay:
+        #
+        #    GtkVnc.Display = image
+        #    EventBox       = OUR touch/mouse layer
+        # ====================================================
+
+        overlay = Gtk.Overlay()
+
+        aspect.add(
+            overlay
+        )
+
+
+        self.display = (
+            GtkVnc.Display()
+        )
+
+
+        self.display.set_scaling(
+            True
+        )
+
+        self.display.set_keep_aspect_ratio(
+            True
+        )
+
+        self.display.set_smoothing(
+            True
+        )
+
+
+        #
+        # CRITICAL:
+        #
+        # Disable GtkVnc's automatic mouse forwarding.
+        #
+        # LumaVM itself performs exact coordinate mapping.
+        #
+
+        self.display.set_read_only(
+            False
+        )
+
+
+        self.display.set_pointer_local(
+            True
+        )
+
+
+        try:
+
+            self.display.set_pointer_force_visible(
+                True
+            )
+
+        except Exception:
+
+            pass
+
+
+        overlay.add(
+            self.display
+        )
+
+
+        # ====================================================
+        # Direct input layer
+        # ====================================================
+
+        self.input_layer = Gtk.EventBox()
+
+        self.input_layer.set_visible_window(
+            False
+        )
+
+        self.input_layer.set_can_focus(
+            True
+        )
+
+
+        self.input_layer.add_events(
+            Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+            | Gdk.EventMask.BUTTON_RELEASE_MASK
+            | Gdk.EventMask.SCROLL_MASK
+            | Gdk.EventMask.ENTER_NOTIFY_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
+
+
+        self.input_layer.connect(
+            "motion-notify-event",
+            self.on_pointer_motion
+        )
+
+        self.input_layer.connect(
+            "button-press-event",
+            self.on_pointer_press
+        )
+
+        self.input_layer.connect(
+            "button-release-event",
+            self.on_pointer_release
+        )
+
+        self.input_layer.connect(
+            "scroll-event",
+            self.on_pointer_scroll
+        )
+
+
+        overlay.add_overlay(
+            self.input_layer
+        )
+
+
+        overlay.set_overlay_pass_through(
+            self.input_layer,
+            False
+        )
+
+
+        self.stack.add_named(
+            device_area,
+            "device"
+        )
+
+
+        # ====================================================
+        # SERIAL PAGE
+        # ====================================================
+
+        scroll = Gtk.ScrolledWindow()
+
+
+        self.serial_text = Gtk.TextView()
+
+        self.serial_text.set_editable(
+            False
+        )
+
+        self.serial_text.set_cursor_visible(
+            False
+        )
+
+
+        scroll.add(
+            self.serial_text
+        )
+
+
+        self.stack.add_named(
+            scroll,
+            "serial"
+        )
+
+
+        self.stack.set_visible_child_name(
+            "device"
+        )
+
+
+    # ========================================================
+    # QEMU
+    # ========================================================
+
+    def qemu_command(self):
+
+        return [
+
+            "qemu-system-x86_64",
+
+            "-name",
+            "LumaMobile",
+
+            "-enable-kvm",
+
+            "-machine",
+            "q35",
+
+            "-cpu",
+            "host",
+
+            "-smp",
+            "4",
+
+            "-m",
+            "2048",
+
+            "-kernel",
+            str(KERNEL),
+
+            "-initrd",
+            str(INITRAMFS),
+
+            "-append",
+            (
+                "console=ttyS0 "
+                "rdinit=/init "
+                "loglevel=4 "
+                "video=Virtual-1:430x932@60"
+            ),
+
+            "-device",
+            "virtio-vga",
+
+            #
+            # Absolute touchscreen-like pointing device.
+            #
+
+            "-device",
+            "qemu-xhci,id=xhci",
+
+            "-device",
+            "usb-tablet,bus=xhci.0",
+
+            #
+            # QEMU itself has no GUI.
+            #
+
+            "-display",
+            "none",
+
+            "-vnc",
+            f"127.0.0.1:{VNC_DISPLAY}",
+
+            "-serial",
+            f"file:{SERIAL_LOG}",
+
+            "-monitor",
+            "none",
+
+            "-no-reboot",
+        ]
+
+
+    # ========================================================
+    # VM lifecycle
+    # ========================================================
+
+    def start_vm(self):
+
+        if (
+            self.qemu is not None
+            and self.qemu.poll() is None
+        ):
+            return
+
+
+        if not KERNEL.exists():
+
+            self.status.set_text(
+                "Kernel missing"
+            )
+
+            return
+
+
+        if not INITRAMFS.exists():
+
+            self.status.set_text(
+                "Initramfs missing"
+            )
+
+            return
+
+
+        LOGDIR.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+
+        try:
+
+            SERIAL_LOG.unlink()
+
+        except FileNotFoundError:
+
+            pass
+
+
+        log = open(
+            QEMU_LOG,
+            "w"
+        )
+
+
+        try:
+
+            self.qemu = subprocess.Popen(
+
+                self.qemu_command(),
+
+                stdin=
+                    subprocess.DEVNULL,
+
+                stdout=
+                    log,
+
+                stderr=
+                    subprocess.STDOUT,
+
+                start_new_session=
+                    True
+            )
+
+        except Exception as exc:
+
+            log.close()
+
+            self.status.set_text(
+                f"VM failed: {exc}"
+            )
+
+            return
+
+
+        log.close()
+
+
+        self.vnc_ready = False
+
+
+        self.status.set_text(
+            "Booting LumaMobile..."
+        )
+
+
+        GLib.timeout_add(
+            500,
+            self.connect_vnc
+        )
+
+
+    def stop_vm(self):
+
+        self.vnc_ready = False
+
+
+        try:
+
+            self.display.close()
+
+        except Exception:
+
+            pass
+
+
+        if (
+            self.qemu is None
+            or self.qemu.poll() is not None
+        ):
+
+            self.qemu = None
+
+            return
+
+
+        try:
+
+            os.killpg(
+                os.getpgid(
+                    self.qemu.pid
+                ),
+                signal.SIGTERM
+            )
+
+
+            self.qemu.wait(
+                timeout=2
+            )
+
+        except Exception:
+
+            try:
+
+                os.killpg(
+                    os.getpgid(
+                        self.qemu.pid
+                    ),
+                    signal.SIGKILL
+                )
+
+            except Exception:
+
+                pass
+
+
+        self.qemu = None
+
+
+        self.status.set_text(
+            "LumaMobile stopped"
+        )
+
+
+    def restart_vm(self):
+
+        self.stop_vm()
+
+
+        GLib.timeout_add(
+            450,
+            self.restart_after_stop
+        )
+
+
+    def restart_after_stop(self):
+
+        self.start_vm()
+
+        return False
+
+
+    def autostart(self):
+
+        self.start_vm()
+
+        return False
+
+
+    # ========================================================
+    # VNC
+    # ========================================================
+
+    def connect_vnc(self):
+
+        if (
+            self.qemu is None
+            or self.qemu.poll() is not None
+        ):
+
+            return False
+
+
+        if self.display.is_open():
+
+            return False
+
+
+        try:
+
+            self.display.open_host(
+                "127.0.0.1",
+                str(VNC_PORT)
+            )
+
+        except Exception:
+
+            GLib.timeout_add(
+                400,
+                self.connect_vnc
+            )
+
+
+        return False
+
+
+    def on_vnc_ready(self):
+
+        pass
+
+
+    # ========================================================
+    # Coordinate mapping
+    # ========================================================
+
+    def guest_position(
+        self,
+        x,
+        y
+    ):
+
+        if not self.vnc_ready:
+
+            return None
+
+
+        guest_w = (
+            self.display.get_width()
+        )
+
+        guest_h = (
+            self.display.get_height()
+        )
+
+
+        if (
+            guest_w <= 0
+            or guest_h <= 0
+        ):
+
+            return None
+
+
+        allocation = (
+            self.input_layer.get_allocation()
+        )
+
+
+        view_w = allocation.width
+        view_h = allocation.height
+
+
+        if (
+            view_w <= 0
+            or view_h <= 0
+        ):
+
+            return None
+
+
+        #
+        # GtkVnc keeps guest aspect ratio.
+        #
+        # Calculate identical letterbox area ourselves.
+        #
+
+        scale = min(
+            view_w / guest_w,
+            view_h / guest_h
+        )
+
+
+        rendered_w = (
+            guest_w * scale
+        )
+
+        rendered_h = (
+            guest_h * scale
+        )
+
+
+        offset_x = (
+            view_w - rendered_w
+        ) / 2.0
+
+
+        offset_y = (
+            view_h - rendered_h
+        ) / 2.0
+
+
+        #
+        # Pointer outside actual phone display.
+        #
+
+        if (
+            x < offset_x
+            or y < offset_y
+            or x >= offset_x + rendered_w
+            or y >= offset_y + rendered_h
+        ):
+
+            return None
+
+
+        guest_x = int(
+            (x - offset_x)
+            / scale
+        )
+
+
+        guest_y = int(
+            (y - offset_y)
+            / scale
+        )
+
+
+        guest_x = max(
+            0,
+            min(
+                guest_w - 1,
+                guest_x
+            )
+        )
+
+
+        guest_y = max(
+            0,
+            min(
+                guest_h - 1,
+                guest_y
+            )
+        )
+
+
+        return (
+            guest_x,
+            guest_y
+        )
+
+
+    def send_pointer(
+        self,
+        event
+    ):
+
+        position = (
+            self.guest_position(
+                event.x,
+                event.y
+            )
+        )
+
+
+        if position is None:
+
+            return
+
+
+        connection = (
+            self.display.get_connection()
+        )
+
+
+        if connection is None:
+
+            return
+
+
+        x, y = position
+
+
+        connection.pointer_event(
+            self.pointer_mask,
+            x,
+            y
+        )
+
+
+    # ========================================================
+    # Mouse / touch forwarding
+    # ========================================================
+
+    def on_pointer_motion(
+        self,
+        widget,
+        event
+    ):
+
+        self.send_pointer(
+            event
+        )
+
+        return True
+
+
+    def button_bit(
+        self,
+        button
+    ):
+
+        if button == 1:
+            return 1 << 0
+
+        if button == 2:
+            return 1 << 1
+
+        if button == 3:
+            return 1 << 2
+
+        return 0
+
+
+    def on_pointer_press(
+        self,
+        widget,
+        event
+    ):
+
+        widget.grab_focus()
+
+
+        self.pointer_mask |= (
+            self.button_bit(
+                event.button
+            )
+        )
+
+
+        self.send_pointer(
+            event
+        )
+
+
+        return True
+
+
+    def on_pointer_release(
+        self,
+        widget,
+        event
+    ):
+
+        self.pointer_mask &= ~(
+            self.button_bit(
+                event.button
+            )
+        )
+
+
+        self.send_pointer(
+            event
+        )
+
+
+        return True
+
+
+    def on_pointer_scroll(
+        self,
+        widget,
+        event
+    ):
+
+        position = (
+            self.guest_position(
+                event.x,
+                event.y
+            )
+        )
+
+
+        if position is None:
+
+            return True
+
+
+        connection = (
+            self.display.get_connection()
+        )
+
+
+        if connection is None:
+
+            return True
+
+
+        x, y = position
+
+
+        if (
+            event.direction ==
+            Gdk.ScrollDirection.UP
+        ):
+
+            wheel_bit = (
+                1 << 3
+            )
+
+        elif (
+            event.direction ==
+            Gdk.ScrollDirection.DOWN
+        ):
+
+            wheel_bit = (
+                1 << 4
+            )
+
+        else:
+
+            return True
+
+
+        connection.pointer_event(
+            self.pointer_mask | wheel_bit,
+            x,
+            y
+        )
+
+
+        connection.pointer_event(
+            self.pointer_mask,
+            x,
+            y
+        )
+
+
+        return True
+
+
+    # ========================================================
+    # Status
+    # ========================================================
+
+    def update_state(self):
+
+        running = (
+            self.qemu is not None
+            and self.qemu.poll() is None
+        )
+
+
+        self.restart_button.set_sensitive(
+            running
+        )
+
+        self.stop_button.set_sensitive(
+            running
+        )
+
+
+        if (
+            self.qemu is not None
+            and self.qemu.poll() is not None
+        ):
+
+            code = (
+                self.qemu.returncode
+            )
+
+            self.status.set_text(
+                f"VM backend exited ({code})"
+            )
+
+            self.qemu = None
+            self.vnc_ready = False
+
+
+        #
+        # VNC is ready once dimensions become valid.
+        #
+
+        if (
+            running
+            and self.display.is_open()
+            and self.display.get_width() > 0
+            and self.display.get_height() > 0
+        ):
+
+            if not self.vnc_ready:
+
+                self.vnc_ready = True
+
+
+                try:
+
+                    absolute = (
+                        self.display
+                        .is_pointer_absolute()
+                    )
+
+                except Exception:
+
+                    absolute = False
+
+
+                self.status.set_text(
+                    "● LumaMobile running"
+                    + (
+                        "  •  absolute input"
+                        if absolute
+                        else
+                        "  •  input connected"
+                    )
+                )
+
+
+        return True
+
+
+    # ========================================================
+    # Serial
+    # ========================================================
+
+    def update_serial(self):
+
+        if (
+            self.stack
+            .get_visible_child_name()
+            != "serial"
+        ):
+
+            return True
+
+
+        if not SERIAL_LOG.exists():
+
+            return True
+
+
+        try:
+
+            text = (
+                SERIAL_LOG.read_text(
+                    errors="replace"
+                )
+            )
+
+        except Exception:
+
+            return True
+
+
+        lines = (
+            text.splitlines()
+        )
+
+
+        if len(lines) > 700:
+
+            lines = (
+                lines[-700:]
+            )
+
+
+        buffer = (
+            self.serial_text
+            .get_buffer()
+        )
+
+
+        buffer.set_text(
+            "\n".join(lines)
+        )
+
+
+        return True
+
+
+    def toggle_serial(
+        self,
+        button
+    ):
+
+        self.stack.set_visible_child_name(
+            "serial"
+            if button.get_active()
+            else "device"
+        )
+
+
+    # ========================================================
+    # Close
+    # ========================================================
+
+    def on_close(
+        self,
+        *_args
+    ):
+
+        self.stop_vm()
+
+        return False
+
+
+
+class LumaVMApplication(
+    Gtk.Application
+):
+
+    def __init__(self):
+
+        super().__init__(
+            application_id=
+                "com.luma.vm"
+        )
+
+
+    def do_startup(self):
+
+        Gtk.Application.do_startup(
+            self
+        )
+
+
+        provider = (
+            Gtk.CssProvider()
+        )
+
+
+        provider.load_from_data(
+            CSS
+        )
+
+
+        Gtk.StyleContext.add_provider_for_screen(
+
+            Gdk.Screen.get_default(),
+
+            provider,
+
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+
+
+    def do_activate(self):
+
+        window = (
+            self.props.active_window
+        )
+
+
+        if not window:
+
+            window = (
+                LumaVM(
+                    self
+                )
+            )
+
+
+        window.show_all()
+
+        window.present()
+
+
+
+application = (
+    LumaVMApplication()
+)
+
+raise SystemExit(
+    application.run(None)
+)

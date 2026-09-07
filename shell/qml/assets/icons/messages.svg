@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 64 64">
+  <path
+    d="M12 15
+       Q12 10 18 10
+       H46
+       Q52 10 52 16
+       V38
+       Q52 44 46 44
+       H29
+       L18 53
+       V44
+       Q12 44 12 38
+       Z"
+    fill="none"
+    stroke="white"
+    stroke-width="4.4"
+    stroke-linejoin="round"/>
+  <circle cx="23" cy="27" r="2.4" fill="white"/>
+  <circle cx="32" cy="27" r="2.4" fill="white"/>
+  <circle cx="41" cy="27" r="2.4" fill="white"/>
+</svg>

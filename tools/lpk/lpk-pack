@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -e
+set -o pipefail
+
+if [ "$#" -ne 2 ]; then
+    echo "Usage:"
+    echo "  lpk-pack SOURCE_DIRECTORY OUTPUT.lpk"
+    exit 1
+fi
+
+SOURCE="$(realpath "$1")"
+OUTPUT="$(realpath -m "$2")"
+
+if [ ! -f "$SOURCE/manifest.luma" ]; then
+    echo "ERROR: manifest.luma missing"
+    exit 1
+fi
+
+if [ ! -d "$SOURCE/payload" ]; then
+    echo "ERROR: payload/ missing"
+    exit 1
+fi
+
+
+# ------------------------------------------------------------
+# LPK v1 deliberately forbids symbolic links.
+#
+# This keeps extraction safe and predictable.
+# ------------------------------------------------------------
+
+if find "$SOURCE" -type l | grep -q .; then
+    echo "ERROR: LPK v1 does not allow symbolic links"
+    exit 1
+fi
+
+
+TMP="$(mktemp -d)"
+
+cleanup()
+{
+    rm -rf "$TMP"
+}
+
+trap cleanup EXIT
+
+
+cp -a \
+    "$SOURCE/manifest.luma" \
+    "$TMP/"
+
+cp -a \
+    "$SOURCE/payload" \
+    "$TMP/"
+
+
+if [ -d "$SOURCE/assets" ]; then
+    cp -a \
+        "$SOURCE/assets" \
+        "$TMP/"
+fi
+
+
+mkdir -p \
+    "$TMP/META"
+
+
+# ------------------------------------------------------------
+# Generate integrity manifest
+# ------------------------------------------------------------
+
+cd "$TMP"
+
+PATHS=(
+    manifest.luma
+    payload
+)
+
+if [ -d assets ]; then
+    PATHS+=(assets)
+fi
+
+
+find "${PATHS[@]}" \
+    -type f \
+    -print0 \
+    | sort -z \
+    | xargs -0 sha256sum \
+    > META/files.sha256
+
+
+# ------------------------------------------------------------
+# Package as deterministic-ish USTAR + gzip
+# ------------------------------------------------------------
+
+CONTENTS=(
+    manifest.luma
+    payload
+    META
+)
+
+if [ -d assets ]; then
+    CONTENTS+=(assets)
+fi
+
+
+tar \
+    --format=ustar \
+    --sort=name \
+    --owner=0 \
+    --group=0 \
+    --numeric-owner \
+    -czf "$OUTPUT" \
+    "${CONTENTS[@]}"
+
+
+echo
+echo "LPK created:"
+echo "  $OUTPUT"
+echo
+
+sha256sum "$OUTPUT"

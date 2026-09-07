@@ -1,0 +1,118 @@
+#ifndef LUMA_SDK_HPP
+#define LUMA_SDK_HPP
+
+#include <string>
+#include <vector>
+
+
+namespace Luma {
+
+
+constexpr const char *SDK_VERSION = "0.1.0";
+
+
+struct Result {
+    bool ok = false;
+    int status = 0;
+
+    std::string value;
+    std::string error;
+
+    explicit operator bool() const {
+        return ok;
+    }
+};
+
+
+/* ============================================================
+ * Core / System API
+ * ============================================================ */
+
+class System {
+public:
+
+    static Result ping();
+
+    static Result frameworkVersion();
+
+    static Result info();
+
+    static Result uptime();
+
+    static Result memory();
+
+    static Result capabilities();
+};
+
+
+/* ============================================================
+ * Power API
+ * ============================================================ */
+
+class Power {
+public:
+
+    static Result shutdown();
+
+    static Result reboot();
+};
+
+
+/* ============================================================
+ * LMS / ecosystem API
+ * ============================================================ */
+
+class Services {
+public:
+
+    static Result ping();
+
+    static Result version();
+
+    static Result capabilities();
+
+    static Result deviceInfo();
+
+    static Result session();
+};
+
+
+/* ============================================================
+ * Notification API
+ * ============================================================ */
+
+class Notifications {
+public:
+
+    static Result post(
+        const std::string &message
+    );
+
+    static Result list();
+};
+
+
+/* ============================================================
+ * Application identity
+ * ============================================================ */
+
+class Application {
+public:
+
+    explicit Application(
+        std::string appId
+    );
+
+    const std::string &id() const;
+
+    Result registerWithLMS() const;
+
+private:
+
+    std::string appId_;
+};
+
+
+} // namespace Luma
+
+#endif

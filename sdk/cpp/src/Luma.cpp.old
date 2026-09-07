@@ -1,0 +1,707 @@
+#include <Luma/Luma.hpp>
+
+#include <atomic>
+#include <cerrno>
+#include <cstring>
+
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+extern "C" {
+#include "luma_protocol.h"
+#include "lms_protocol.h"
+}
+
+
+namespace {
+
+
+std::atomic<uint32_t> requestId{1};
+
+
+/* ============================================================
+ * Generic result helpers
+ * ============================================================ */
+
+Luma::Result failure(
+    int status,
+    const std::string &message
+)
+{
+    Luma::Result result;
+
+    result.ok = false;
+    result.status = status;
+    result.error = message;
+
+    return result;
+}
+
+
+Luma::Result success(
+    const std::string &value
+)
+{
+    Luma::Result result;
+
+    result.ok = true;
+    result.status = 0;
+    result.value = value;
+
+    return result;
+}
+
+
+/* ============================================================
+ * Luma Framework transport
+ * ============================================================ */
+
+Luma::Result frameworkRequest(
+    uint16_t command,
+    const std::string &payload = {}
+)
+{
+    if (
+        payload.size() >
+        LUMA_MAX_PAYLOAD
+    ) {
+        return failure(
+            LUMA_ERR_BAD_MESSAGE,
+            "Framework payload too large"
+        );
+    }
+
+
+    int sock = socket(
+        AF_UNIX,
+        SOCK_SEQPACKET,
+        0
+    );
+
+
+    if (
+        sock < 0
+    ) {
+        return failure(
+            errno,
+            std::string(
+                "Cannot create Framework socket: "
+            ) + std::strerror(errno)
+        );
+    }
+
+
+    sockaddr_un address{};
+
+    address.sun_family =
+        AF_UNIX;
+
+
+    std::strncpy(
+        address.sun_path,
+        LUMA_SOCKET_PATH,
+        sizeof(address.sun_path) - 1
+    );
+
+
+    if (
+        connect(
+            sock,
+            reinterpret_cast<sockaddr *>(&address),
+            sizeof(address)
+        ) != 0
+    ) {
+
+        int saved = errno;
+
+        close(sock);
+
+        return failure(
+            saved,
+            std::string(
+                "Luma Framework unavailable: "
+            ) + std::strerror(saved)
+        );
+    }
+
+
+    luma_message request{};
+
+    request.magic =
+        LUMA_MAGIC;
+
+    request.abi_major =
+        LUMA_ABI_MAJOR;
+
+    request.abi_minor =
+        LUMA_ABI_MINOR;
+
+    request.type =
+        LUMA_MSG_REQUEST;
+
+    request.command =
+        command;
+
+    request.request_id =
+        requestId.fetch_add(1);
+
+
+    if (
+        !payload.empty()
+    ) {
+
+        std::memcpy(
+            request.payload,
+            payload.data(),
+            payload.size()
+        );
+
+        request.payload_length =
+            static_cast<uint32_t>(
+                payload.size()
+            );
+    }
+
+
+    ssize_t sent = send(
+        sock,
+        &request,
+        sizeof(request),
+        MSG_NOSIGNAL
+    );
+
+
+    if (
+        sent !=
+        static_cast<ssize_t>(
+            sizeof(request)
+        )
+    ) {
+
+        int saved = errno;
+
+        close(sock);
+
+        return failure(
+            saved,
+            "Failed to send Framework request"
+        );
+    }
+
+
+    luma_message response{};
+
+
+    ssize_t received = recv(
+        sock,
+        &response,
+        sizeof(response),
+        0
+    );
+
+
+    close(sock);
+
+
+    if (
+        received !=
+        static_cast<ssize_t>(
+            sizeof(response)
+        )
+    ) {
+
+        return failure(
+            LUMA_ERR_BAD_MESSAGE,
+            "Invalid Framework response size"
+        );
+    }
+
+
+    if (
+        response.magic !=
+        LUMA_MAGIC
+    ) {
+
+        return failure(
+            LUMA_ERR_BAD_MAGIC,
+            "Invalid Framework response magic"
+        );
+    }
+
+
+    if (
+        response.abi_major !=
+        LUMA_ABI_MAJOR
+    ) {
+
+        return failure(
+            LUMA_ERR_BAD_ABI,
+            "Incompatible Framework ABI"
+        );
+    }
+
+
+    if (
+        response.request_id !=
+        request.request_id
+    ) {
+
+        return failure(
+            LUMA_ERR_BAD_MESSAGE,
+            "Framework request ID mismatch"
+        );
+    }
+
+
+    if (
+        response.payload_length >
+        LUMA_MAX_PAYLOAD
+    ) {
+
+        return failure(
+            LUMA_ERR_BAD_MESSAGE,
+            "Invalid Framework payload"
+        );
+    }
+
+
+    std::string text(
+        response.payload,
+        response.payload_length
+    );
+
+
+    if (
+        response.status !=
+        LUMA_OK
+    ) {
+
+        return failure(
+            response.status,
+            text
+        );
+    }
+
+
+    return success(
+        text
+    );
+}
+
+
+/* ============================================================
+ * LMS transport
+ * ============================================================ */
+
+Luma::Result lmsRequest(
+    uint16_t command,
+    const std::string &payload = {}
+)
+{
+    if (
+        payload.size() >
+        LMS_MAX_PAYLOAD
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_MESSAGE,
+            "LMS payload too large"
+        );
+    }
+
+
+    int sock = socket(
+        AF_UNIX,
+        SOCK_SEQPACKET,
+        0
+    );
+
+
+    if (
+        sock < 0
+    ) {
+
+        return failure(
+            errno,
+            std::string(
+                "Cannot create LMS socket: "
+            ) + std::strerror(errno)
+        );
+    }
+
+
+    sockaddr_un address{};
+
+    address.sun_family =
+        AF_UNIX;
+
+
+    std::strncpy(
+        address.sun_path,
+        LMS_SOCKET_PATH,
+        sizeof(address.sun_path) - 1
+    );
+
+
+    if (
+        connect(
+            sock,
+            reinterpret_cast<sockaddr *>(&address),
+            sizeof(address)
+        ) != 0
+    ) {
+
+        int saved = errno;
+
+        close(sock);
+
+        return failure(
+            saved,
+            std::string(
+                "LMS unavailable: "
+            ) + std::strerror(saved)
+        );
+    }
+
+
+    lms_message request{};
+
+    request.magic =
+        LMS_MAGIC;
+
+    request.abi_major =
+        LMS_ABI_MAJOR;
+
+    request.abi_minor =
+        LMS_ABI_MINOR;
+
+    request.type =
+        LMS_MSG_REQUEST;
+
+    request.command =
+        command;
+
+    request.request_id =
+        requestId.fetch_add(1);
+
+
+    if (
+        !payload.empty()
+    ) {
+
+        std::memcpy(
+            request.payload,
+            payload.data(),
+            payload.size()
+        );
+
+
+        request.payload_length =
+            static_cast<uint32_t>(
+                payload.size()
+            );
+    }
+
+
+    ssize_t sent = send(
+        sock,
+        &request,
+        sizeof(request),
+        MSG_NOSIGNAL
+    );
+
+
+    if (
+        sent !=
+        static_cast<ssize_t>(
+            sizeof(request)
+        )
+    ) {
+
+        int saved = errno;
+
+        close(sock);
+
+        return failure(
+            saved,
+            "Failed to send LMS request"
+        );
+    }
+
+
+    lms_message response{};
+
+
+    ssize_t received = recv(
+        sock,
+        &response,
+        sizeof(response),
+        0
+    );
+
+
+    close(sock);
+
+
+    if (
+        received !=
+        static_cast<ssize_t>(
+            sizeof(response)
+        )
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_MESSAGE,
+            "Invalid LMS response size"
+        );
+    }
+
+
+    if (
+        response.magic !=
+        LMS_MAGIC
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_MAGIC,
+            "Invalid LMS response magic"
+        );
+    }
+
+
+    if (
+        response.abi_major !=
+        LMS_ABI_MAJOR
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_ABI,
+            "Incompatible LMS ABI"
+        );
+    }
+
+
+    if (
+        response.request_id !=
+        request.request_id
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_MESSAGE,
+            "LMS request ID mismatch"
+        );
+    }
+
+
+    if (
+        response.payload_length >
+        LMS_MAX_PAYLOAD
+    ) {
+
+        return failure(
+            LMS_ERR_BAD_MESSAGE,
+            "Invalid LMS payload"
+        );
+    }
+
+
+    std::string text(
+        response.payload,
+        response.payload_length
+    );
+
+
+    if (
+        response.status !=
+        LMS_OK
+    ) {
+
+        return failure(
+            response.status,
+            text
+        );
+    }
+
+
+    return success(
+        text
+    );
+}
+
+
+} // anonymous namespace
+
+
+
+namespace Luma {
+
+
+/* ============================================================
+ * System
+ * ============================================================ */
+
+Result System::ping()
+{
+    return frameworkRequest(
+        LUMA_CORE_PING
+    );
+}
+
+
+Result System::frameworkVersion()
+{
+    return frameworkRequest(
+        LUMA_CORE_VERSION
+    );
+}
+
+
+Result System::capabilities()
+{
+    return frameworkRequest(
+        LUMA_CORE_CAPABILITIES
+    );
+}
+
+
+Result System::info()
+{
+    return frameworkRequest(
+        LUMA_SYSTEM_INFO
+    );
+}
+
+
+Result System::uptime()
+{
+    return frameworkRequest(
+        LUMA_SYSTEM_UPTIME
+    );
+}
+
+
+Result System::memory()
+{
+    return frameworkRequest(
+        LUMA_SYSTEM_MEMORY
+    );
+}
+
+
+/* ============================================================
+ * Power
+ * ============================================================ */
+
+Result Power::shutdown()
+{
+    return frameworkRequest(
+        LUMA_POWER_SHUTDOWN
+    );
+}
+
+
+Result Power::reboot()
+{
+    return frameworkRequest(
+        LUMA_POWER_REBOOT
+    );
+}
+
+
+/* ============================================================
+ * LMS
+ * ============================================================ */
+
+Result Services::ping()
+{
+    return lmsRequest(
+        LMS_CORE_PING
+    );
+}
+
+
+Result Services::version()
+{
+    return lmsRequest(
+        LMS_CORE_VERSION
+    );
+}
+
+
+Result Services::capabilities()
+{
+    return lmsRequest(
+        LMS_CORE_CAPABILITIES
+    );
+}
+
+
+Result Services::deviceInfo()
+{
+    return lmsRequest(
+        LMS_DEVICE_INFO
+    );
+}
+
+
+Result Services::session()
+{
+    return lmsRequest(
+        LMS_DEVICE_SESSION
+    );
+}
+
+
+/* ============================================================
+ * Notifications
+ * ============================================================ */
+
+Result Notifications::post(
+    const std::string &message
+)
+{
+    return lmsRequest(
+        LMS_NOTIFY_POST,
+        message
+    );
+}
+
+
+Result Notifications::list()
+{
+    return lmsRequest(
+        LMS_NOTIFY_LIST
+    );
+}
+
+
+/* ============================================================
+ * Application
+ * ============================================================ */
+
+Application::Application(
+    std::string appId
+)
+    : appId_(std::move(appId))
+{
+}
+
+
+const std::string &
+Application::id() const
+{
+    return appId_;
+}
+
+
+Result Application::registerWithLMS() const
+{
+    return lmsRequest(
+        LMS_APP_REGISTER,
+        appId_
+    );
+}
+
+
+} // namespace Luma

@@ -1,0 +1,1704 @@
+#define _GNU_SOURCE
+
+#include "../include/lms_protocol.h"
+
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/utsname.h>
+
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+
+
+/* ============================================================
+ * Minimal Framework 2 wire definition.
+ *
+ * LMS only needs Framework ping during startup/health checks.
+ * ============================================================ */
+
+#define FRAMEWORK_SOCKET "/run/luma/framework.sock"
+#define FRAMEWORK_MAGIC  0x4C554D41u
+#define FRAMEWORK_ABI    2
+#define FRAMEWORK_PING   0x0001
+#define FRAMEWORK_REQUEST 1
+
+#define FRAMEWORK_PAYLOAD 2048
+
+
+struct framework_message {
+    uint32_t magic;
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    uint16_t type;
+    uint16_t command;
+    uint32_t request_id;
+    int32_t status;
+    uint32_t payload_length;
+    char payload[FRAMEWORK_PAYLOAD];
+};
+
+
+static volatile sig_atomic_t running = 1;
+static unsigned long notification_counter = 0;
+
+
+/* ============================================================
+ * Utility
+ * ============================================================ */
+
+static void stop_handler(int sig)
+{
+    (void)sig;
+    running = 0;
+}
+
+
+static int mkdir_p(const char *path)
+{
+    char tmp[512];
+
+    if (strlen(path) >= sizeof(tmp))
+        return -1;
+
+    strcpy(tmp, path);
+
+    for (char *p = tmp + 1; *p; ++p) {
+
+        if (*p != '/')
+            continue;
+
+        *p = '\0';
+
+        if (
+            mkdir(tmp, 0755) != 0 &&
+            errno != EEXIST
+        ) {
+            return -1;
+        }
+
+        *p = '/';
+    }
+
+    if (
+        mkdir(tmp, 0755) != 0 &&
+        errno != EEXIST
+    ) {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+static int valid_field(const char *value)
+{
+    if (!value || !*value)
+        return 0;
+
+    for (const char *p = value; *p; ++p) {
+
+        if (
+            *p == '\t' ||
+            *p == '\n' ||
+            *p == '\r'
+        ) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+static void response_text(
+    struct lms_message *res,
+    int32_t status,
+    const char *text
+)
+{
+    res->status = status;
+
+    if (!text)
+        text = "";
+
+    size_t len = strlen(text);
+
+    if (len >= LMS_MAX_PAYLOAD)
+        len = LMS_MAX_PAYLOAD - 1;
+
+    memcpy(
+        res->payload,
+        text,
+        len
+    );
+
+    res->payload[len] = '\0';
+
+    res->payload_length =
+        (uint32_t)len;
+}
+
+
+static int count_lines(const char *path)
+{
+    FILE *f = fopen(path, "r");
+
+    if (!f)
+        return 0;
+
+    int count = 0;
+    int ch;
+
+    while ((ch = fgetc(f)) != EOF) {
+
+        if (ch == '\n')
+            ++count;
+    }
+
+    fclose(f);
+
+    return count;
+}
+
+
+/* ============================================================
+ * Framework check
+ * ============================================================ */
+
+static int framework_ping(void)
+{
+    int fd =
+        socket(
+            AF_UNIX,
+            SOCK_SEQPACKET,
+            0
+        );
+
+    if (fd < 0)
+        return 0;
+
+
+    struct sockaddr_un addr;
+
+    memset(
+        &addr,
+        0,
+        sizeof(addr)
+    );
+
+    addr.sun_family =
+        AF_UNIX;
+
+    strncpy(
+        addr.sun_path,
+        FRAMEWORK_SOCKET,
+        sizeof(addr.sun_path) - 1
+    );
+
+
+    if (
+        connect(
+            fd,
+            (struct sockaddr *)&addr,
+            sizeof(addr)
+        ) != 0
+    ) {
+        close(fd);
+        return 0;
+    }
+
+
+    struct framework_message req;
+
+    memset(
+        &req,
+        0,
+        sizeof(req)
+    );
+
+    req.magic =
+        FRAMEWORK_MAGIC;
+
+    req.abi_major =
+        FRAMEWORK_ABI;
+
+    req.type =
+        FRAMEWORK_REQUEST;
+
+    req.command =
+        FRAMEWORK_PING;
+
+    req.request_id =
+        1;
+
+
+    if (
+        send(
+            fd,
+            &req,
+            sizeof(req),
+            0
+        ) != (ssize_t)sizeof(req)
+    ) {
+        close(fd);
+        return 0;
+    }
+
+
+    struct framework_message res;
+
+    memset(
+        &res,
+        0,
+        sizeof(res)
+    );
+
+    ssize_t received =
+        recv(
+            fd,
+            &res,
+            sizeof(res),
+            0
+        );
+
+    close(fd);
+
+
+    if (
+        received <= 0 ||
+        res.magic != FRAMEWORK_MAGIC ||
+        res.status != 0
+    ) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/* ============================================================
+ * Application database
+ *
+ * TSV:
+ *
+ * id    name    version    permissions
+ * ============================================================ */
+
+static int app_find(
+    const char *app_id,
+    char *output,
+    size_t output_size
+)
+{
+    FILE *f =
+        fopen(
+            LMS_APP_DB_PATH,
+            "r"
+        );
+
+    if (!f)
+        return 0;
+
+
+    char line[4096];
+
+    while (
+        fgets(
+            line,
+            sizeof(line),
+            f
+        )
+    ) {
+
+        char copy[4096];
+
+        strncpy(
+            copy,
+            line,
+            sizeof(copy) - 1
+        );
+
+        copy[sizeof(copy) - 1] =
+            '\0';
+
+
+        char *save = NULL;
+
+        char *id =
+            strtok_r(
+                copy,
+                "\t",
+                &save
+            );
+
+
+        if (
+            id &&
+            strcmp(
+                id,
+                app_id
+            ) == 0
+        ) {
+
+            line[
+                strcspn(
+                    line,
+                    "\r\n"
+                )
+            ] = '\0';
+
+
+            strncpy(
+                output,
+                line,
+                output_size - 1
+            );
+
+            output[
+                output_size - 1
+            ] = '\0';
+
+
+            fclose(f);
+
+            return 1;
+        }
+    }
+
+
+    fclose(f);
+
+    return 0;
+}
+
+
+static int app_upsert(
+    const char *id,
+    const char *name,
+    const char *version,
+    const char *permissions
+)
+{
+    const char *tmp_path =
+        "/var/lib/lms/apps.tmp";
+
+
+    FILE *out =
+        fopen(
+            tmp_path,
+            "w"
+        );
+
+    if (!out)
+        return 0;
+
+
+    FILE *in =
+        fopen(
+            LMS_APP_DB_PATH,
+            "r"
+        );
+
+
+    int replaced = 0;
+
+
+    if (in) {
+
+        char line[4096];
+
+        while (
+            fgets(
+                line,
+                sizeof(line),
+                in
+            )
+        ) {
+
+            char copy[4096];
+
+            strncpy(
+                copy,
+                line,
+                sizeof(copy) - 1
+            );
+
+            copy[
+                sizeof(copy) - 1
+            ] = '\0';
+
+
+            char *save = NULL;
+
+            char *existing_id =
+                strtok_r(
+                    copy,
+                    "\t",
+                    &save
+                );
+
+
+            if (
+                existing_id &&
+                strcmp(
+                    existing_id,
+                    id
+                ) == 0
+            ) {
+
+                fprintf(
+                    out,
+                    "%s\t%s\t%s\t%s\n",
+                    id,
+                    name,
+                    version,
+                    permissions
+                );
+
+                replaced = 1;
+
+            } else {
+
+                fputs(
+                    line,
+                    out
+                );
+            }
+        }
+
+        fclose(in);
+    }
+
+
+    if (!replaced) {
+
+        fprintf(
+            out,
+            "%s\t%s\t%s\t%s\n",
+            id,
+            name,
+            version,
+            permissions
+        );
+    }
+
+
+    fclose(out);
+
+
+    if (
+        rename(
+            tmp_path,
+            LMS_APP_DB_PATH
+        ) != 0
+    ) {
+        unlink(tmp_path);
+        return 0;
+    }
+
+
+    chmod(
+        LMS_APP_DB_PATH,
+        0644
+    );
+
+
+    return 1;
+}
+
+
+static int app_has_permission(
+    const char *app_id,
+    const char *permission
+)
+{
+    char line[4096];
+
+    if (
+        !app_find(
+            app_id,
+            line,
+            sizeof(line)
+        )
+    ) {
+        return 0;
+    }
+
+
+    char *save = NULL;
+
+    (void)strtok_r(
+        line,
+        "\t",
+        &save
+    );
+
+    (void)strtok_r(
+        NULL,
+        "\t",
+        &save
+    );
+
+    (void)strtok_r(
+        NULL,
+        "\t",
+        &save
+    );
+
+
+    char *permissions =
+        strtok_r(
+            NULL,
+            "\t",
+            &save
+        );
+
+
+    if (!permissions)
+        return 0;
+
+
+    char *perm_save = NULL;
+
+    char *token =
+        strtok_r(
+            permissions,
+            ",",
+            &perm_save
+        );
+
+
+    while (token) {
+
+        while (*token == ' ')
+            ++token;
+
+
+        if (
+            strcmp(
+                token,
+                "*"
+            ) == 0 ||
+            strcmp(
+                token,
+                permission
+            ) == 0
+        ) {
+            return 1;
+        }
+
+
+        token =
+            strtok_r(
+                NULL,
+                ",",
+                &perm_save
+            );
+    }
+
+
+    return 0;
+}
+
+
+/* ============================================================
+ * Notification database
+ * ============================================================ */
+
+static int notification_append(
+    const char *app_id,
+    const char *title,
+    const char *body
+)
+{
+    FILE *f =
+        fopen(
+            LMS_NOTIFICATION_DB_PATH,
+            "a"
+        );
+
+    if (!f)
+        return 0;
+
+
+    ++notification_counter;
+
+
+    unsigned long long id =
+        ((unsigned long long)time(NULL) * 1000ULL)
+        +
+        notification_counter;
+
+
+    fprintf(
+        f,
+        "%llu\t%s\t%s\t%s\n",
+        id,
+        app_id,
+        title,
+        body
+    );
+
+
+    fclose(f);
+
+    chmod(
+        LMS_NOTIFICATION_DB_PATH,
+        0644
+    );
+
+
+    return 1;
+}
+
+
+static void list_file(
+    const char *path,
+    struct lms_message *res
+)
+{
+    FILE *f =
+        fopen(
+            path,
+            "r"
+        );
+
+    if (!f) {
+
+        response_text(
+            res,
+            LMS_OK,
+            ""
+        );
+
+        return;
+    }
+
+
+    size_t used = 0;
+
+    char line[1024];
+
+
+    while (
+        fgets(
+            line,
+            sizeof(line),
+            f
+        )
+    ) {
+
+        size_t len =
+            strlen(line);
+
+
+        if (
+            used + len >=
+            LMS_MAX_PAYLOAD - 1
+        ) {
+            break;
+        }
+
+
+        memcpy(
+            res->payload + used,
+            line,
+            len
+        );
+
+
+        used += len;
+    }
+
+
+    fclose(f);
+
+
+    res->payload[used] =
+        '\0';
+
+    res->payload_length =
+        (uint32_t)used;
+
+    res->status =
+        LMS_OK;
+}
+
+
+/* ============================================================
+ * Request handling
+ * ============================================================ */
+
+static void handle_request(
+    const struct lms_message *req,
+    struct lms_message *res,
+    const struct ucred *peer
+)
+{
+    res->magic =
+        LMS_MAGIC;
+
+    res->abi_major =
+        LMS_ABI_MAJOR;
+
+    res->abi_minor =
+        LMS_ABI_MINOR;
+
+    res->type =
+        LMS_MSG_RESPONSE;
+
+    res->command =
+        req->command;
+
+    res->request_id =
+        req->request_id;
+
+
+    if (
+        req->magic !=
+        LMS_MAGIC
+    ) {
+
+        response_text(
+            res,
+            LMS_ERR_BAD_MAGIC,
+            "bad LMS magic"
+        );
+
+        return;
+    }
+
+
+    if (
+        req->abi_major !=
+        LMS_ABI_MAJOR
+    ) {
+
+        response_text(
+            res,
+            LMS_ERR_BAD_ABI,
+            "unsupported LMS ABI"
+        );
+
+        return;
+    }
+
+
+    char payload[
+        LMS_MAX_PAYLOAD + 1
+    ];
+
+
+    size_t payload_length =
+        req->payload_length;
+
+
+    if (
+        payload_length >=
+        LMS_MAX_PAYLOAD
+    ) {
+
+        response_text(
+            res,
+            LMS_ERR_BAD_MESSAGE,
+            "payload too large"
+        );
+
+        return;
+    }
+
+
+    memcpy(
+        payload,
+        req->payload,
+        payload_length
+    );
+
+
+    payload[payload_length] =
+        '\0';
+
+
+    switch (
+        req->command
+    ) {
+
+        /* ====================================================
+         * Core
+         * ==================================================== */
+
+        case LMS_CMD_CORE_PING:
+
+            response_text(
+                res,
+                LMS_OK,
+                "pong"
+            );
+
+            break;
+
+
+        case LMS_CMD_CORE_VERSION:
+
+            response_text(
+                res,
+                LMS_OK,
+                LMS_VERSION
+            );
+
+            break;
+
+
+        case LMS_CMD_CORE_CAPABILITIES:
+
+            response_text(
+                res,
+                LMS_OK,
+                "core.health,"
+                "device.info,"
+                "device.session,"
+                "apps.registry,"
+                "permissions.check,"
+                "notifications.post,"
+                "notifications.list,"
+                "notifications.persistence"
+            );
+
+            break;
+
+
+        case LMS_CMD_CORE_HEALTH: {
+
+            char text[512];
+
+            snprintf(
+                text,
+                sizeof(text),
+                "lms=online\n"
+                "framework=%s\n"
+                "apps=%d\n"
+                "notifications=%d\n"
+                "abi=%d.%d",
+                framework_ping()
+                    ? "online"
+                    : "offline",
+                count_lines(
+                    LMS_APP_DB_PATH
+                ),
+                count_lines(
+                    LMS_NOTIFICATION_DB_PATH
+                ),
+                LMS_ABI_MAJOR,
+                LMS_ABI_MINOR
+            );
+
+
+            response_text(
+                res,
+                LMS_OK,
+                text
+            );
+
+            break;
+        }
+
+
+        /* ====================================================
+         * Device
+         * ==================================================== */
+
+        case LMS_CMD_DEVICE_INFO: {
+
+            struct utsname u;
+
+            if (
+                uname(&u) != 0
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INTERNAL,
+                    "uname failed"
+                );
+
+                break;
+            }
+
+
+            char hostname[256] =
+                "unknown";
+
+
+            (void)gethostname(
+                hostname,
+                sizeof(hostname)
+            );
+
+
+            hostname[
+                sizeof(hostname) - 1
+            ] = '\0';
+
+
+            char text[1024];
+
+
+            snprintf(
+                text,
+                sizeof(text),
+                "hostname=%s\n"
+                "kernel=%s\n"
+                "machine=%s\n"
+                "system=%s",
+                hostname,
+                u.release,
+                u.machine,
+                u.sysname
+            );
+
+
+            response_text(
+                res,
+                LMS_OK,
+                text
+            );
+
+            break;
+        }
+
+
+        case LMS_CMD_DEVICE_SESSION: {
+
+            char text[256];
+
+
+            snprintf(
+                text,
+                sizeof(text),
+                "pid=%ld\n"
+                "uid=%ld\n"
+                "gid=%ld",
+                peer
+                    ? (long)peer->pid
+                    : -1L,
+                peer
+                    ? (long)peer->uid
+                    : -1L,
+                peer
+                    ? (long)peer->gid
+                    : -1L
+            );
+
+
+            response_text(
+                res,
+                LMS_OK,
+                text
+            );
+
+            break;
+        }
+
+
+        /* ====================================================
+         * Applications
+         * ==================================================== */
+
+        case LMS_CMD_APP_REGISTER: {
+
+            /*
+             * Registration is privileged.
+             *
+             * Eventually lpkd / package manager owns this.
+             */
+
+            if (
+                !peer ||
+                peer->uid != 0
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_PERMISSION,
+                    "app registration requires root"
+                );
+
+                break;
+            }
+
+
+            char *save = NULL;
+
+            char *id =
+                strtok_r(
+                    payload,
+                    "\t",
+                    &save
+                );
+
+            char *name =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+            char *version =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+            char *permissions =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+
+            if (
+                !valid_field(id) ||
+                !valid_field(name) ||
+                !valid_field(version)
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INVALID,
+                    "invalid app metadata"
+                );
+
+                break;
+            }
+
+
+            if (!permissions)
+                permissions = "";
+
+
+            if (
+                strchr(
+                    permissions,
+                    '\n'
+                ) ||
+                strchr(
+                    permissions,
+                    '\r'
+                ) ||
+                strchr(
+                    permissions,
+                    '\t'
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INVALID,
+                    "invalid permission list"
+                );
+
+                break;
+            }
+
+
+            if (
+                !app_upsert(
+                    id,
+                    name,
+                    version,
+                    permissions
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INTERNAL,
+                    "failed to update app registry"
+                );
+
+                break;
+            }
+
+
+            response_text(
+                res,
+                LMS_OK,
+                "registered"
+            );
+
+            break;
+        }
+
+
+        case LMS_CMD_APP_LIST:
+
+            list_file(
+                LMS_APP_DB_PATH,
+                res
+            );
+
+            break;
+
+
+        case LMS_CMD_APP_GET: {
+
+            if (
+                !valid_field(
+                    payload
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INVALID,
+                    "app id required"
+                );
+
+                break;
+            }
+
+
+            char line[4096];
+
+
+            if (
+                !app_find(
+                    payload,
+                    line,
+                    sizeof(line)
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_NOT_FOUND,
+                    "application not registered"
+                );
+
+                break;
+            }
+
+
+            response_text(
+                res,
+                LMS_OK,
+                line
+            );
+
+            break;
+        }
+
+
+        /* ====================================================
+         * Permission check
+         * ==================================================== */
+
+        case LMS_CMD_PERMISSION_CHECK: {
+
+            char *save = NULL;
+
+            char *id =
+                strtok_r(
+                    payload,
+                    "\t",
+                    &save
+                );
+
+            char *permission =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+
+            if (
+                !valid_field(id) ||
+                !valid_field(permission)
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INVALID,
+                    "app id and permission required"
+                );
+
+                break;
+            }
+
+
+            response_text(
+                res,
+                LMS_OK,
+                app_has_permission(
+                    id,
+                    permission
+                )
+                    ? "granted"
+                    : "denied"
+            );
+
+            break;
+        }
+
+
+        /* ====================================================
+         * Notifications
+         * ==================================================== */
+
+        case LMS_CMD_NOTIFY_POST: {
+
+            char *save = NULL;
+
+            char *app_id =
+                strtok_r(
+                    payload,
+                    "\t",
+                    &save
+                );
+
+            char *title =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+            char *body =
+                strtok_r(
+                    NULL,
+                    "\t",
+                    &save
+                );
+
+
+            if (
+                !valid_field(app_id) ||
+                !valid_field(title) ||
+                !valid_field(body)
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INVALID,
+                    "invalid notification"
+                );
+
+                break;
+            }
+
+
+            if (
+                (!peer || peer->uid != 0) &&
+                !app_has_permission(
+                    app_id,
+                    "lms.notifications.post"
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_PERMISSION,
+                    "notification permission denied"
+                );
+
+                break;
+            }
+
+
+            if (
+                !notification_append(
+                    app_id,
+                    title,
+                    body
+                )
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INTERNAL,
+                    "failed to store notification"
+                );
+
+                break;
+            }
+
+
+            response_text(
+                res,
+                LMS_OK,
+                "posted"
+            );
+
+            break;
+        }
+
+
+        case LMS_CMD_NOTIFY_LIST:
+
+            list_file(
+                LMS_NOTIFICATION_DB_PATH,
+                res
+            );
+
+            break;
+
+
+        case LMS_CMD_NOTIFY_CLEAR:
+
+            if (
+                !peer ||
+                peer->uid != 0
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_PERMISSION,
+                    "clear requires root"
+                );
+
+                break;
+            }
+
+
+            if (
+                unlink(
+                    LMS_NOTIFICATION_DB_PATH
+                ) != 0 &&
+                errno != ENOENT
+            ) {
+
+                response_text(
+                    res,
+                    LMS_ERR_INTERNAL,
+                    "failed to clear notifications"
+                );
+
+                break;
+            }
+
+
+            response_text(
+                res,
+                LMS_OK,
+                "cleared"
+            );
+
+            break;
+
+
+        default:
+
+            response_text(
+                res,
+                LMS_ERR_UNKNOWN_COMMAND,
+                "unknown command"
+            );
+
+            break;
+    }
+}
+
+
+/* ============================================================
+ * Main
+ * ============================================================ */
+
+int main(void)
+{
+    signal(
+        SIGINT,
+        stop_handler
+    );
+
+    signal(
+        SIGTERM,
+        stop_handler
+    );
+
+
+    if (
+        mkdir_p(
+            "/run/lms"
+        ) != 0 ||
+        mkdir_p(
+            "/var/lib/lms"
+        ) != 0
+    ) {
+
+        fprintf(
+            stderr,
+            "[lmsd] failed to create directories\n"
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * Framework starts immediately before LMS during boot.
+     * Give it a short readiness window instead of failing
+     * because of a startup race.
+     */
+    int framework_ready = 0;
+
+    for (int attempt = 0; attempt < 50; ++attempt) {
+
+        if (framework_ping()) {
+            framework_ready = 1;
+            break;
+        }
+
+        usleep(100000);
+    }
+
+
+    if (!framework_ready) {
+
+        fprintf(
+            stderr,
+            "[lmsd] Luma Framework unavailable after 5 seconds\n"
+        );
+
+        return 1;
+    }
+
+
+    unlink(
+        LMS_SOCKET_PATH
+    );
+
+
+    int server =
+        socket(
+            AF_UNIX,
+            SOCK_SEQPACKET,
+            0
+        );
+
+
+    if (server < 0) {
+
+        perror(
+            "[lmsd] socket"
+        );
+
+        return 1;
+    }
+
+
+    struct sockaddr_un addr;
+
+    memset(
+        &addr,
+        0,
+        sizeof(addr)
+    );
+
+    addr.sun_family =
+        AF_UNIX;
+
+
+    strncpy(
+        addr.sun_path,
+        LMS_SOCKET_PATH,
+        sizeof(addr.sun_path) - 1
+    );
+
+
+    if (
+        bind(
+            server,
+            (struct sockaddr *)&addr,
+            sizeof(addr)
+        ) != 0
+    ) {
+
+        perror(
+            "[lmsd] bind"
+        );
+
+        close(server);
+
+        return 1;
+    }
+
+
+    chmod(
+        LMS_SOCKET_PATH,
+        0660
+    );
+
+
+    if (
+        listen(
+            server,
+            32
+        ) != 0
+    ) {
+
+        perror(
+            "[lmsd] listen"
+        );
+
+        close(server);
+
+        return 1;
+    }
+
+
+    FILE *ready =
+        fopen(
+            LMS_READY_PATH,
+            "w"
+        );
+
+
+    if (ready) {
+
+        fputs(
+            "ready\n",
+            ready
+        );
+
+        fclose(ready);
+    }
+
+
+    printf(
+        "[lmsd] LMS %s ABI %d.%d online\n",
+        LMS_VERSION,
+        LMS_ABI_MAJOR,
+        LMS_ABI_MINOR
+    );
+
+
+    while (running) {
+
+        int client =
+            accept(
+                server,
+                NULL,
+                NULL
+            );
+
+
+        if (client < 0) {
+
+            if (
+                errno == EINTR
+            )
+                continue;
+
+            perror(
+                "[lmsd] accept"
+            );
+
+            break;
+        }
+
+
+        struct ucred peer;
+
+        memset(
+            &peer,
+            0,
+            sizeof(peer)
+        );
+
+
+        socklen_t peer_len =
+            sizeof(peer);
+
+
+        if (
+            getsockopt(
+                client,
+                SOL_SOCKET,
+                SO_PEERCRED,
+                &peer,
+                &peer_len
+            ) != 0
+        ) {
+
+            peer.pid = -1;
+            peer.uid = (uid_t)-1;
+            peer.gid = (gid_t)-1;
+        }
+
+
+        struct lms_message req;
+
+        memset(
+            &req,
+            0,
+            sizeof(req)
+        );
+
+
+        ssize_t got =
+            recv(
+                client,
+                &req,
+                sizeof(req),
+                0
+            );
+
+
+        if (
+            got > 0
+        ) {
+
+            struct lms_message res;
+
+            memset(
+                &res,
+                0,
+                sizeof(res)
+            );
+
+
+            handle_request(
+                &req,
+                &res,
+                &peer
+            );
+
+
+            (void)send(
+                client,
+                &res,
+                sizeof(res),
+                0
+            );
+        }
+
+
+        close(client);
+    }
+
+
+    unlink(
+        LMS_SOCKET_PATH
+    );
+
+    unlink(
+        LMS_READY_PATH
+    );
+
+
+    close(server);
+
+
+    return 0;
+}

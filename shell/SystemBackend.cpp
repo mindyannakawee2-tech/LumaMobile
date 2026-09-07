@@ -1,0 +1,1071 @@
+#include "SystemBackend.h"
+
+#include <QDesktopServices>
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <QStorageInfo>
+#include <QUrl>
+
+SystemBackend::SystemBackend(QObject *parent)
+    : QObject(parent)
+{
+}
+
+
+QString SystemBackend::executable(const QString &name)
+{
+    return QStandardPaths::findExecutable(name);
+}
+
+
+SystemBackend::Result SystemBackend::run(
+    const QString &program,
+    const QStringList &arguments,
+    int timeout
+)
+{
+    Result result;
+
+    QString exe = executable(program);
+
+    if (exe.isEmpty()) {
+        result.err = program + " is not installed";
+        return result;
+    }
+
+    QProcess process;
+
+    process.start(exe, arguments);
+
+    if (!process.waitForStarted(3000)) {
+        result.err = process.errorString();
+        return result;
+    }
+
+    if (!process.waitForFinished(timeout)) {
+        process.kill();
+        process.waitForFinished();
+
+        result.err = "command timed out";
+        return result;
+    }
+
+    result.code = process.exitCode();
+
+    result.out =
+        QString::fromUtf8(
+            process.readAllStandardOutput()
+        ).trimmed();
+
+    result.err =
+        QString::fromUtf8(
+            process.readAllStandardError()
+        ).trimmed();
+
+    return result;
+}
+
+
+bool SystemBackend::wifiEnabled()
+{
+    Result r = run(
+        "nmcli",
+        {"radio", "wifi"}
+    );
+
+    return
+        r.code == 0 &&
+        r.out.trimmed() == "enabled";
+}
+
+
+bool SystemBackend::setWifiEnabled(bool enabled)
+{
+    Result r = run(
+        "nmcli",
+        {
+            "radio",
+            "wifi",
+            enabled ? "on" : "off"
+        }
+    );
+
+    return r.code == 0;
+}
+
+
+bool SystemBackend::bluetoothEnabled()
+{
+    Result r = run(
+        "rfkill",
+        {"list", "bluetooth"}
+    );
+
+    if (r.code != 0)
+        return false;
+
+    return
+        !r.out.contains(
+            "Soft blocked: yes",
+            Qt::CaseInsensitive
+        );
+}
+
+
+bool SystemBackend::setBluetoothEnabled(bool enabled)
+{
+    Result r = run(
+        "rfkill",
+        {
+            enabled ? "unblock" : "block",
+            "bluetooth"
+        }
+    );
+
+    return r.code == 0;
+}
+
+
+int SystemBackend::batteryPercent()
+{
+    QDir dir("/sys/class/power_supply");
+
+    for (const QString &name : dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+
+        QFile typeFile(
+            dir.filePath(name + "/type")
+        );
+
+        if (!typeFile.open(QIODevice::ReadOnly))
+            continue;
+
+        QString type =
+            QString::fromUtf8(
+                typeFile.readAll()
+            ).trimmed();
+
+        if (type != "Battery")
+            continue;
+
+        QFile capacityFile(
+            dir.filePath(name + "/capacity")
+        );
+
+        if (!capacityFile.open(QIODevice::ReadOnly))
+            continue;
+
+        bool ok = false;
+
+        int value =
+            QString::fromUtf8(
+                capacityFile.readAll()
+            ).trimmed().toInt(&ok);
+
+        if (ok)
+            return value;
+    }
+
+    return -1;
+}
+
+
+int SystemBackend::brightnessPercent()
+{
+    Result r = run(
+        "brightnessctl",
+        {"-m"}
+    );
+
+    if (r.code != 0)
+        return -1;
+
+    QRegularExpression re(
+        R"((\d+)%)"
+    );
+
+    auto match =
+        re.match(r.out);
+
+    if (!match.hasMatch())
+        return -1;
+
+    return match.captured(1).toInt();
+}
+
+
+bool SystemBackend::setBrightnessPercent(int value)
+{
+    value = qBound(1, value, 100);
+
+    Result r = run(
+        "brightnessctl",
+        {
+            "set",
+            QString::number(value) + "%"
+        }
+    );
+
+    return r.code == 0;
+}
+
+
+int SystemBackend::volumePercent()
+{
+    Result r = run(
+        "wpctl",
+        {
+            "get-volume",
+            "@DEFAULT_AUDIO_SINK@"
+        }
+    );
+
+    if (r.code != 0)
+        return -1;
+
+    QRegularExpression re(
+        R"(Volume:\s*([0-9.]+))"
+    );
+
+    auto match =
+        re.match(r.out);
+
+    if (!match.hasMatch())
+        return -1;
+
+    double value =
+        match.captured(1).toDouble();
+
+    return qBound(
+        0,
+        qRound(value * 100.0),
+        150
+    );
+}
+
+
+bool SystemBackend::setVolumePercent(int value)
+{
+    value = qBound(0, value, 150);
+
+    Result r = run(
+        "wpctl",
+        {
+            "set-volume",
+            "@DEFAULT_AUDIO_SINK@",
+            QString::number(value) + "%"
+        }
+    );
+
+    return r.code == 0;
+}
+
+
+QString SystemBackend::humanBytes(quint64 value)
+{
+    double number = static_cast<double>(value);
+
+    const char *units[] = {
+        "B",
+        "KB",
+        "MB",
+        "GB",
+        "TB"
+    };
+
+    int unit = 0;
+
+    while (
+        number >= 1024.0 &&
+        unit < 4
+    ) {
+        number /= 1024.0;
+        ++unit;
+    }
+
+    return
+        QString::number(
+            number,
+            'f',
+            unit == 0 ? 0 : 1
+        )
+        + " "
+        + units[unit];
+}
+
+
+QVariantMap SystemBackend::storageInfo()
+{
+    QStorageInfo storage(
+        homePath()
+    );
+
+    quint64 total =
+        storage.bytesTotal();
+
+    quint64 free =
+        storage.bytesAvailable();
+
+    quint64 used =
+        total > free
+            ? total - free
+            : 0;
+
+    QVariantMap map;
+
+    map["total"] =
+        QVariant::fromValue(total);
+
+    map["free"] =
+        QVariant::fromValue(free);
+
+    map["used"] =
+        QVariant::fromValue(used);
+
+    map["totalHuman"] =
+        humanBytes(total);
+
+    map["freeHuman"] =
+        humanBytes(free);
+
+    map["usedHuman"] =
+        humanBytes(used);
+
+    map["usedPercent"] =
+        total > 0
+            ? static_cast<int>(
+                  (used * 100) / total
+              )
+            : 0;
+
+    return map;
+}
+
+
+QVariantMap SystemBackend::status()
+{
+    QVariantMap map;
+
+    map["wifiEnabled"] =
+        wifiEnabled();
+
+    map["bluetoothEnabled"] =
+        bluetoothEnabled();
+
+    map["batteryPercent"] =
+        batteryPercent();
+
+    map["brightnessPercent"] =
+        brightnessPercent();
+
+    map["volumePercent"] =
+        volumePercent();
+
+    map["storage"] =
+        storageInfo();
+
+    map["cellularAvailable"] =
+        cellularAvailable();
+
+    return map;
+}
+
+
+QString SystemBackend::homePath()
+{
+    const QString persistent =
+        QStringLiteral(
+            "/data/home/luma"
+        );
+
+    if (QDir(persistent).exists())
+        return persistent;
+
+    return QDir::homePath();
+}
+
+
+QString SystemBackend::picturesPath()
+{
+    return homePath()
+        + QStringLiteral(
+            "/Pictures"
+        );
+}
+
+
+QString SystemBackend::musicPath()
+{
+    return homePath()
+        + QStringLiteral(
+            "/Music"
+        );
+}
+
+
+QString SystemBackend::downloadsPath()
+{
+    return homePath()
+        + QStringLiteral(
+            "/Downloads"
+        );
+}
+
+
+QVariantList SystemBackend::listDirectory(
+    const QString &path
+)
+{
+    QVariantList result;
+
+    QDir dir(path);
+
+    if (!dir.exists())
+        return result;
+
+    QFileInfoList entries =
+        dir.entryInfoList(
+            QDir::AllEntries |
+            QDir::NoDotAndDotDot |
+            QDir::Hidden,
+            QDir::DirsFirst |
+            QDir::Name |
+            QDir::IgnoreCase
+        );
+
+    for (const QFileInfo &info : entries) {
+
+        QVariantMap item;
+
+        item["name"] =
+            info.fileName();
+
+        item["path"] =
+            info.absoluteFilePath();
+
+        item["isDir"] =
+            info.isDir();
+
+        item["size"] =
+            QVariant::fromValue(
+                static_cast<qulonglong>(
+                    info.size()
+                )
+            );
+
+        item["suffix"] =
+            info.suffix().toLower();
+
+        result.append(item);
+    }
+
+    return result;
+}
+
+
+static bool imageSuffix(
+    const QString &suffix
+)
+{
+    static const QStringList formats = {
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        "bmp"
+    };
+
+    return formats.contains(
+        suffix.toLower()
+    );
+}
+
+
+static bool audioSuffix(
+    const QString &suffix
+)
+{
+    static const QStringList formats = {
+        "mp3",
+        "ogg",
+        "wav",
+        "flac",
+        "m4a",
+        "aac",
+        "opus"
+    };
+
+    return formats.contains(
+        suffix.toLower()
+    );
+}
+
+
+QVariantList SystemBackend::listImages(
+    const QString &path
+)
+{
+    QVariantList result;
+
+    QDirIterator it(
+        path,
+        QDir::Files,
+        QDirIterator::Subdirectories
+    );
+
+    while (
+        it.hasNext() &&
+        result.size() < 300
+    ) {
+        QString file =
+            it.next();
+
+        QFileInfo info(file);
+
+        if (!imageSuffix(info.suffix()))
+            continue;
+
+        QVariantMap item;
+
+        item["name"] =
+            info.fileName();
+
+        item["path"] =
+            info.absoluteFilePath();
+
+        result.append(item);
+    }
+
+    return result;
+}
+
+
+QVariantList SystemBackend::listAudio(
+    const QString &path
+)
+{
+    QVariantList result;
+
+    QDirIterator it(
+        path,
+        QDir::Files,
+        QDirIterator::Subdirectories
+    );
+
+    while (
+        it.hasNext() &&
+        result.size() < 500
+    ) {
+        QString file =
+            it.next();
+
+        QFileInfo info(file);
+
+        if (!audioSuffix(info.suffix()))
+            continue;
+
+        QVariantMap item;
+
+        item["name"] =
+            info.completeBaseName();
+
+        item["path"] =
+            info.absoluteFilePath();
+
+        result.append(item);
+    }
+
+    return result;
+}
+
+
+QString SystemBackend::parentPath(
+    const QString &path
+)
+{
+    QDir dir(path);
+
+    if (dir.cdUp())
+        return dir.absolutePath();
+
+    return path;
+}
+
+
+QString SystemBackend::fileUrl(
+    const QString &path
+)
+{
+    return
+        QUrl::fromLocalFile(path)
+        .toString();
+}
+
+
+bool SystemBackend::openPath(
+    const QString &path
+)
+{
+    return
+        QDesktopServices::openUrl(
+            QUrl::fromLocalFile(path)
+        );
+}
+
+
+QVariantMap SystemBackend::createFolder(
+    const QString &parent,
+    const QString &name
+)
+{
+    QVariantMap result;
+
+    QString clean =
+        name.trimmed();
+
+    if (
+        clean.isEmpty() ||
+        clean.contains('/') ||
+        clean == "." ||
+        clean == ".."
+    ) {
+        result["ok"] = false;
+        result["message"] = "Invalid folder name";
+        return result;
+    }
+
+    QDir dir(parent);
+
+    bool ok =
+        dir.mkdir(clean);
+
+    result["ok"] = ok;
+
+    result["message"] =
+        ok
+            ? "Folder created"
+            : "Could not create folder";
+
+    return result;
+}
+
+
+QVariantMap SystemBackend::renamePath(
+    const QString &path,
+    const QString &newName
+)
+{
+    QVariantMap result;
+
+    QFileInfo info(path);
+
+    QString clean =
+        newName.trimmed();
+
+    if (
+        clean.isEmpty() ||
+        clean.contains('/')
+    ) {
+        result["ok"] = false;
+        result["message"] = "Invalid name";
+        return result;
+    }
+
+    QString destination =
+        info.dir().filePath(clean);
+
+    bool ok =
+        QFile::rename(
+            path,
+            destination
+        );
+
+    result["ok"] = ok;
+
+    result["message"] =
+        ok
+            ? "Renamed"
+            : "Rename failed";
+
+    return result;
+}
+
+
+QVariantList SystemBackend::listLpkPackages()
+{
+    QVariantList result;
+
+    QDir dir(
+        QDir::homePath()
+        + "/LumaMobile/packages"
+    );
+
+    QFileInfoList files =
+        dir.entryInfoList(
+            {"*.lpk"},
+            QDir::Files,
+            QDir::Name
+        );
+
+    for (const QFileInfo &info : files) {
+
+        QVariantMap item;
+
+        item["name"] =
+            info.fileName();
+
+        item["path"] =
+            info.absoluteFilePath();
+
+        item["size"] =
+            QVariant::fromValue(
+                static_cast<qulonglong>(
+                    info.size()
+                )
+            );
+
+        result.append(item);
+    }
+
+    return result;
+}
+
+
+QVariantMap SystemBackend::installLpk(
+    const QString &path
+)
+{
+    QVariantMap result;
+
+    QString manager =
+        executable("lpk");
+
+    if (manager.isEmpty()) {
+
+        QString projectManager =
+            QDir::homePath()
+            + "/LumaMobile/rootfs/usr/bin/lpk";
+
+        QFileInfo info(projectManager);
+
+        if (
+            info.exists() &&
+            info.isExecutable()
+        ) {
+            manager = projectManager;
+        }
+    }
+
+    if (manager.isEmpty()) {
+        result["ok"] = false;
+        result["message"] =
+            "LPK runtime is not installed on this host";
+        return result;
+    }
+
+    QProcess process;
+
+    process.start(
+        manager,
+        {
+            "install",
+            path
+        }
+    );
+
+    if (!process.waitForFinished(120000)) {
+        process.kill();
+
+        result["ok"] = false;
+        result["message"] =
+            "LPK installation timed out";
+
+        return result;
+    }
+
+    QString out =
+        QString::fromUtf8(
+            process.readAllStandardOutput()
+        ).trimmed();
+
+    QString err =
+        QString::fromUtf8(
+            process.readAllStandardError()
+        ).trimmed();
+
+    result["ok"] =
+        process.exitCode() == 0;
+
+    result["message"] =
+        !out.isEmpty()
+            ? out
+            : err;
+
+    return result;
+}
+
+
+QString SystemBackend::firstModem()
+{
+    Result r =
+        run(
+            "mmcli",
+            {"-L"}
+        );
+
+    if (r.code != 0)
+        return {};
+
+    QRegularExpression re(
+        R"(/Modem/(\d+))"
+    );
+
+    auto match =
+        re.match(r.out);
+
+    if (!match.hasMatch())
+        return {};
+
+    return match.captured(1);
+}
+
+
+bool SystemBackend::cellularAvailable()
+{
+    return
+        !firstModem().isEmpty();
+}
+
+
+QVariantMap SystemBackend::dial(
+    const QString &number
+)
+{
+    QVariantMap result;
+
+    QString modem =
+        firstModem();
+
+    if (modem.isEmpty()) {
+        result["ok"] = false;
+        result["message"] =
+            "No cellular modem detected";
+        return result;
+    }
+
+    QRegularExpression valid(
+        R"(^[0-9+*#]+$)"
+    );
+
+    if (!valid.match(number).hasMatch()) {
+        result["ok"] = false;
+        result["message"] =
+            "Invalid phone number";
+        return result;
+    }
+
+    Result create =
+        run(
+            "mmcli",
+            {
+                "-m",
+                modem,
+                "--voice-create-call=number="
+                    + number
+            },
+            20000
+        );
+
+    if (create.code != 0) {
+        result["ok"] = false;
+        result["message"] =
+            !create.err.isEmpty()
+                ? create.err
+                : create.out;
+        return result;
+    }
+
+    QRegularExpression callRe(
+        R"((/org/freedesktop/ModemManager1/Call/\d+))"
+    );
+
+    auto match =
+        callRe.match(create.out);
+
+    if (!match.hasMatch()) {
+        result["ok"] = false;
+        result["message"] =
+            "Call created but call path was not returned";
+        return result;
+    }
+
+    m_activeCall =
+        match.captured(1);
+
+    Result start =
+        run(
+            "mmcli",
+            {
+                "-o",
+                m_activeCall,
+                "--start"
+            },
+            20000
+        );
+
+    result["ok"] =
+        start.code == 0;
+
+    result["message"] =
+        start.code == 0
+            ? "Calling " + number
+            : (
+                !start.err.isEmpty()
+                    ? start.err
+                    : start.out
+              );
+
+    return result;
+}
+
+
+QVariantMap SystemBackend::hangupCall()
+{
+    QVariantMap result;
+
+    if (m_activeCall.isEmpty()) {
+        result["ok"] = false;
+        result["message"] =
+            "No active call";
+        return result;
+    }
+
+    Result r =
+        run(
+            "mmcli",
+            {
+                "-o",
+                m_activeCall,
+                "--hangup"
+            },
+            15000
+        );
+
+    result["ok"] =
+        r.code == 0;
+
+    result["message"] =
+        r.code == 0
+            ? "Call ended"
+            : (
+                !r.err.isEmpty()
+                    ? r.err
+                    : r.out
+              );
+
+    if (r.code == 0)
+        m_activeCall.clear();
+
+    return result;
+}
+
+
+QVariantMap SystemBackend::sendSms(
+    const QString &number,
+    const QString &text
+)
+{
+    QVariantMap result;
+
+    QString modem =
+        firstModem();
+
+    if (modem.isEmpty()) {
+        result["ok"] = false;
+        result["message"] =
+            "No cellular modem detected";
+        return result;
+    }
+
+    if (
+        number.trimmed().isEmpty() ||
+        text.trimmed().isEmpty()
+    ) {
+        result["ok"] = false;
+        result["message"] =
+            "Number and message are required";
+        return result;
+    }
+
+    QString safeText =
+        text;
+
+    safeText.replace(',', ' ');
+
+    Result create =
+        run(
+            "mmcli",
+            {
+                "-m",
+                modem,
+                "--messaging-create-sms=text="
+                    + safeText
+                    + ",number="
+                    + number
+            },
+            20000
+        );
+
+    if (create.code != 0) {
+        result["ok"] = false;
+        result["message"] =
+            !create.err.isEmpty()
+                ? create.err
+                : create.out;
+        return result;
+    }
+
+    QRegularExpression smsRe(
+        R"((/org/freedesktop/ModemManager1/SMS/\d+))"
+    );
+
+    auto match =
+        smsRe.match(create.out);
+
+    if (!match.hasMatch()) {
+        result["ok"] = false;
+        result["message"] =
+            "SMS created but SMS path was not returned";
+        return result;
+    }
+
+    Result send =
+        run(
+            "mmcli",
+            {
+                "-s",
+                match.captured(1),
+                "--send"
+            },
+            30000
+        );
+
+    result["ok"] =
+        send.code == 0;
+
+    result["message"] =
+        send.code == 0
+            ? "Message sent"
+            : (
+                !send.err.isEmpty()
+                    ? send.err
+                    : send.out
+              );
+
+    return result;
+}
