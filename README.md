@@ -136,10 +136,10 @@ Generated root filesystems, disk images, build output, downloaded upstream sourc
 - [x] LPK prototype
 - [x] Host setup + preview workflow
 - [ ] Reproducible full OS build from a fresh clone
-- [ ] Complete application navigation model
-- [ ] Luma on-screen keyboard
+- [X] Complete application navigation model
+- [X] Luma on-screen keyboard
 - [ ] Persistent user storage workflow
-- [ ] Functional browser and file workflows
+- [X] Functional browser and file workflows
 - [ ] Notifications UI
 - [ ] App recents / task management
 - [ ] Application sandboxing
