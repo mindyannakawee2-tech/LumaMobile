@@ -5,13 +5,22 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
+
+#include <QSaveFile>
 #include <QTimer>
 #include <QUrl>
 
 #include <algorithm>
 
+
+// ============================================================
+// Constructor
+// ============================================================
 
 AppRegistry::AppRegistry(
     QObject *parent
@@ -48,9 +57,14 @@ AppRegistry::AppRegistry(
     );
 
 
+    loadLayout();
     reload();
 }
 
+
+// ============================================================
+// Public data
+// ============================================================
 
 QVariantList AppRegistry::apps() const
 {
@@ -58,20 +72,91 @@ QVariantList AppRegistry::apps() const
 }
 
 
+QVariantList AppRegistry::homeApps() const
+{
+    return appsForOrder(
+        m_homeOrder
+    );
+}
+
+
+QVariantList AppRegistry::dockApps() const
+{
+    return appsForOrder(
+        m_dockOrder
+    );
+}
+
+
+// ============================================================
+// Layout storage path
+// ============================================================
+
+QString AppRegistry::layoutPath() const
+{
+    QString base;
+
+
+    if (
+        QDir(
+            QStringLiteral(
+                "/data/home/luma"
+            )
+        ).exists()
+    ) {
+
+        base =
+            QStringLiteral(
+                "/data/home/luma/.config/luma"
+            );
+
+    } else {
+
+        base =
+            QDir::home().filePath(
+                QStringLiteral(
+                    ".config/luma"
+                )
+            );
+    }
+
+
+    QDir().mkpath(
+        base
+    );
+
+
+    return
+        QDir(base).filePath(
+            QStringLiteral(
+                "home.json"
+            )
+        );
+}
+
+
+// ============================================================
+// Manifest directories
+// ============================================================
+
 QStringList AppRegistry::manifestDirectories() const
 {
     QStringList result;
 
 
     auto addDirectory =
-        [&result](const QString &path) {
+        [&result](
+            const QString &path
+        ) {
 
             if (
                 !path.isEmpty() &&
                 !result.contains(path)
             ) {
+
                 result.append(
-                    QDir(path).absolutePath()
+                    QDir(path)
+                        .absolutePath()
                 );
             }
         };
@@ -88,16 +173,12 @@ QStringList AppRegistry::manifestDirectories() const
 #endif
 
 
-    // System-installed applications.
-
     addDirectory(
         QStringLiteral(
             "/usr/share/luma/apps"
         )
     );
 
-
-    // Persistent LumaMobile user applications.
 
     if (
         QDir(
@@ -107,22 +188,22 @@ QStringList AppRegistry::manifestDirectories() const
         ).exists()
     ) {
 
-        const QString dataApps =
+        const QString path =
             QStringLiteral(
                 "/data/home/luma/.local/share/luma/apps"
             );
 
+
         QDir().mkpath(
-            dataApps
+            path
         );
 
+
         addDirectory(
-            dataApps
+            path
         );
     }
 
-
-    // Host/development user applications.
 
     const QString userApps =
         QDir::home().filePath(
@@ -131,20 +212,16 @@ QStringList AppRegistry::manifestDirectories() const
             )
         );
 
+
     QDir().mkpath(
         userApps
     );
+
 
     addDirectory(
         userApps
     );
 
-
-    // Optional developer override.
-    //
-    // Example:
-    //
-    // LUMA_APP_DIR=/my/apps ./run-preview.sh
 
     const QString extra =
         qEnvironmentVariable(
@@ -152,7 +229,9 @@ QStringList AppRegistry::manifestDirectories() const
         );
 
 
-    if (!extra.isEmpty()) {
+    if (
+        !extra.isEmpty()
+    ) {
 
         const QStringList paths =
             extra.split(
@@ -165,6 +244,7 @@ QStringList AppRegistry::manifestDirectories() const
             const QString &path :
             paths
         ) {
+
             addDirectory(
                 path
             );
@@ -175,6 +255,10 @@ QStringList AppRegistry::manifestDirectories() const
     return result;
 }
 
+
+// ============================================================
+// Manifest parser
+// ============================================================
 
 QVariantMap AppRegistry::loadManifest(
     const QString &path
@@ -190,6 +274,7 @@ QVariantMap AppRegistry::loadManifest(
             QIODevice::ReadOnly
         )
     ) {
+
         return {};
     }
 
@@ -206,10 +291,11 @@ QVariantMap AppRegistry::loadManifest(
 
     if (
         error.error !=
-        QJsonParseError::NoError
+            QJsonParseError::NoError
         ||
         !document.isObject()
     ) {
+
         return {};
     }
 
@@ -227,6 +313,7 @@ QVariantMap AppRegistry::loadManifest(
             )
             .toBool(true)
     ) {
+
         return {};
     }
 
@@ -253,7 +340,9 @@ QVariantMap AppRegistry::loadManifest(
             .trimmed();
 
 
-    if (title.isEmpty()) {
+    if (
+        title.isEmpty()
+    ) {
 
         title =
             object
@@ -283,6 +372,7 @@ QVariantMap AppRegistry::loadManifest(
         title.isEmpty() ||
         entry.isEmpty()
     ) {
+
         return {};
     }
 
@@ -302,8 +392,12 @@ QVariantMap AppRegistry::loadManifest(
             const QString &value
         ) -> QString
         {
-            if (value.isEmpty())
+            if (
+                value.isEmpty()
+            ) {
+
                 return {};
+            }
 
 
             QFileInfo info(
@@ -314,6 +408,7 @@ QVariantMap AppRegistry::loadManifest(
             if (
                 !info.isAbsolute()
             ) {
+
                 info =
                     QFileInfo(
                         manifestDir.filePath(
@@ -339,6 +434,7 @@ QVariantMap AppRegistry::loadManifest(
             entryPath
         )
     ) {
+
         return {};
     }
 
@@ -358,25 +454,15 @@ QVariantMap AppRegistry::loadManifest(
     QVariantMap app;
 
 
-    app[
-        QStringLiteral(
-            "id"
-        )
-    ] = id;
+    app["id"] =
+        id;
 
 
-    app[
-        QStringLiteral(
-            "title"
-        )
-    ] = title;
+    app["title"] =
+        title;
 
 
-    app[
-        QStringLiteral(
-            "glyph"
-        )
-    ] =
+    app["glyph"] =
         object
             .value(
                 QStringLiteral(
@@ -388,11 +474,7 @@ QVariantMap AppRegistry::loadManifest(
             );
 
 
-    app[
-        QStringLiteral(
-            "accent"
-        )
-    ] =
+    app["accent"] =
         object
             .value(
                 QStringLiteral(
@@ -406,11 +488,7 @@ QVariantMap AppRegistry::loadManifest(
             );
 
 
-    app[
-        QStringLiteral(
-            "order"
-        )
-    ] =
+    app["order"] =
         object
             .value(
                 QStringLiteral(
@@ -422,11 +500,7 @@ QVariantMap AppRegistry::loadManifest(
             );
 
 
-    app[
-        QStringLiteral(
-            "dock"
-        )
-    ] =
+    app["dock"] =
         object
             .value(
                 QStringLiteral(
@@ -438,11 +512,7 @@ QVariantMap AppRegistry::loadManifest(
             );
 
 
-    app[
-        QStringLiteral(
-            "home"
-        )
-    ] =
+    app["home"] =
         object
             .value(
                 QStringLiteral(
@@ -454,21 +524,13 @@ QVariantMap AppRegistry::loadManifest(
             );
 
 
-    app[
-        QStringLiteral(
-            "entryUrl"
-        )
-    ] =
+    app["entryUrl"] =
         QUrl::fromLocalFile(
             entryPath
         ).toString();
 
 
-    app[
-        QStringLiteral(
-            "iconUrl"
-        )
-    ] =
+    app["iconUrl"] =
         (
             !iconPath.isEmpty() &&
             QFileInfo::exists(
@@ -481,11 +543,7 @@ QVariantMap AppRegistry::loadManifest(
             : QString();
 
 
-    app[
-        QStringLiteral(
-            "manifest"
-        )
-    ] =
+    app["manifest"] =
         manifestInfo
             .absoluteFilePath();
 
@@ -493,6 +551,482 @@ QVariantMap AppRegistry::loadManifest(
     return app;
 }
 
+
+// ============================================================
+// Layout load/save
+// ============================================================
+
+void AppRegistry::loadLayout()
+{
+    QFile file(
+        layoutPath()
+    );
+
+
+    if (
+        !file.exists()
+    ) {
+
+        m_hasSavedLayout =
+            false;
+
+        return;
+    }
+
+
+    if (
+        !file.open(
+            QIODevice::ReadOnly
+        )
+    ) {
+
+        m_hasSavedLayout =
+            false;
+
+        return;
+    }
+
+
+    QJsonParseError error;
+
+
+    const QJsonDocument document =
+        QJsonDocument::fromJson(
+            file.readAll(),
+            &error
+        );
+
+
+    if (
+        error.error !=
+            QJsonParseError::NoError
+        ||
+        !document.isObject()
+    ) {
+
+        m_hasSavedLayout =
+            false;
+
+        return;
+    }
+
+
+    const QJsonObject object =
+        document.object();
+
+
+    auto readArray =
+        [&object](
+            const QString &name
+        ) {
+
+            QStringList result;
+
+
+            const QJsonArray array =
+                object
+                    .value(name)
+                    .toArray();
+
+
+            for (
+                const QJsonValue &value :
+                array
+            ) {
+
+                const QString id =
+                    value
+                        .toString()
+                        .trimmed();
+
+
+                if (
+                    !id.isEmpty() &&
+                    !result.contains(id)
+                ) {
+
+                    result.append(
+                        id
+                    );
+                }
+            }
+
+
+            return result;
+        };
+
+
+    m_homeOrder =
+        readArray(
+            QStringLiteral(
+                "home"
+            )
+        );
+
+
+    m_dockOrder =
+        readArray(
+            QStringLiteral(
+                "dock"
+            )
+        );
+
+
+    m_hasSavedLayout =
+        true;
+}
+
+
+bool AppRegistry::saveLayout()
+{
+    QJsonObject root;
+
+
+    root[
+        QStringLiteral(
+            "version"
+        )
+    ] = 1;
+
+
+    QJsonArray home;
+
+
+    for (
+        const QString &id :
+        m_homeOrder
+    ) {
+
+        home.append(
+            id
+        );
+    }
+
+
+    QJsonArray dock;
+
+
+    for (
+        const QString &id :
+        m_dockOrder
+    ) {
+
+        dock.append(
+            id
+        );
+    }
+
+
+    root[
+        QStringLiteral(
+            "home"
+        )
+    ] = home;
+
+
+    root[
+        QStringLiteral(
+            "dock"
+        )
+    ] = dock;
+
+
+    QSaveFile file(
+        layoutPath()
+    );
+
+
+    if (
+        !file.open(
+            QIODevice::WriteOnly
+        )
+    ) {
+
+        return false;
+    }
+
+
+    file.write(
+        QJsonDocument(root)
+            .toJson(
+                QJsonDocument::Indented
+            )
+    );
+
+
+    if (
+        !file.commit()
+    ) {
+
+        return false;
+    }
+
+
+    m_hasSavedLayout =
+        true;
+
+
+    return true;
+}
+
+
+// ============================================================
+// Default layout
+// ============================================================
+
+void AppRegistry::seedDefaultLayout()
+{
+    m_homeOrder.clear();
+    m_dockOrder.clear();
+
+
+    // First build the dock.
+    //
+    // Maximum of four apps.
+
+    for (
+        const QVariant &value :
+        m_apps
+    ) {
+
+        const QVariantMap app =
+            value.toMap();
+
+
+        if (
+            app.value(
+                "dock"
+            ).toBool()
+            &&
+            m_dockOrder.size() < 4
+        ) {
+
+            m_dockOrder.append(
+                app.value(
+                    "id"
+                ).toString()
+            );
+        }
+    }
+
+
+    // Everything else that belongs on Home.
+
+    for (
+        const QVariant &value :
+        m_apps
+    ) {
+
+        const QVariantMap app =
+            value.toMap();
+
+
+        const QString id =
+            app.value(
+                "id"
+            ).toString();
+
+
+        if (
+            app.value(
+                "home"
+            ).toBool()
+            &&
+            !m_dockOrder.contains(id)
+        ) {
+
+            m_homeOrder.append(
+                id
+            );
+        }
+    }
+}
+
+
+// ============================================================
+// Helpers
+// ============================================================
+
+QStringList AppRegistry::cleanOrder(
+    const QStringList &input
+) const
+{
+    QStringList result;
+
+
+    for (
+        const QString &id :
+        input
+    ) {
+
+        if (
+            id.isEmpty() ||
+            result.contains(id) ||
+            appById(id).isEmpty()
+        ) {
+
+            continue;
+        }
+
+
+        result.append(
+            id
+        );
+    }
+
+
+    return result;
+}
+
+
+QVariantList AppRegistry::appsForOrder(
+    const QStringList &order
+) const
+{
+    QVariantList result;
+
+
+    for (
+        const QString &id :
+        order
+    ) {
+
+        const QVariantMap app =
+            appById(
+                id
+            );
+
+
+        if (
+            !app.isEmpty()
+        ) {
+
+            result.append(
+                app
+            );
+        }
+    }
+
+
+    return result;
+}
+
+
+// ============================================================
+// Reconcile installed apps with saved layout
+// ============================================================
+
+bool AppRegistry::reconcileLayout()
+{
+    const QStringList beforeHome =
+        m_homeOrder;
+
+    const QStringList beforeDock =
+        m_dockOrder;
+
+
+    if (
+        !m_hasSavedLayout
+    ) {
+
+        seedDefaultLayout();
+
+        return true;
+    }
+
+
+    // Dock wins if old data accidentally contains an app
+    // in both places.
+
+    m_dockOrder =
+        cleanOrder(
+            m_dockOrder
+        );
+
+
+    while (
+        m_dockOrder.size() > 4
+    ) {
+
+        m_dockOrder.removeLast();
+    }
+
+
+    QStringList cleanHome =
+        cleanOrder(
+            m_homeOrder
+        );
+
+
+    for (
+        const QString &id :
+        m_dockOrder
+    ) {
+
+        cleanHome.removeAll(
+            id
+        );
+    }
+
+
+    m_homeOrder =
+        cleanHome;
+
+
+    // Newly installed applications are appended to Home.
+    //
+    // We intentionally do NOT modify a user's dock when
+    // a new application is installed.
+
+    for (
+        const QVariant &value :
+        m_apps
+    ) {
+
+        const QVariantMap app =
+            value.toMap();
+
+
+        const QString id =
+            app.value(
+                "id"
+            ).toString();
+
+
+        if (
+            !app.value(
+                "home"
+            ).toBool()
+        ) {
+
+            continue;
+        }
+
+
+        if (
+            m_homeOrder.contains(id) ||
+            m_dockOrder.contains(id)
+        ) {
+
+            continue;
+        }
+
+
+        m_homeOrder.append(
+            id
+        );
+    }
+
+
+    return
+        beforeHome != m_homeOrder ||
+        beforeDock != m_dockOrder;
+}
+
+
+// ============================================================
+// Scan applications
+// ============================================================
 
 void AppRegistry::reload()
 {
@@ -521,6 +1055,7 @@ void AppRegistry::reload()
         if (
             !directory.exists()
         ) {
+
             continue;
         }
 
@@ -558,15 +1093,14 @@ void AppRegistry::reload()
             if (
                 app.isEmpty()
             ) {
+
                 continue;
             }
 
 
             applications.insert(
                 app.value(
-                    QStringLiteral(
-                        "id"
-                    )
+                    "id"
                 ).toString(),
                 app
             );
@@ -587,7 +1121,7 @@ void AppRegistry::reload()
             applications.cbegin();
 
         iterator !=
-        applications.cend();
+            applications.cend();
 
         ++iterator
     ) {
@@ -616,23 +1150,20 @@ void AppRegistry::reload()
 
             const int ao =
                 a.value(
-                    QStringLiteral(
-                        "order"
-                    )
+                    "order"
                 ).toInt();
 
 
             const int bo =
                 b.value(
-                    QStringLiteral(
-                        "order"
-                    )
+                    "order"
                 ).toInt();
 
 
             if (
                 ao != bo
             ) {
+
                 return
                     ao < bo;
             }
@@ -640,21 +1171,37 @@ void AppRegistry::reload()
 
             return
                 a.value(
-                    QStringLiteral(
-                        "title"
-                    )
+                    "title"
                 ).toString()
                 <
                 b.value(
-                    QStringLiteral(
-                        "title"
-                    )
+                    "title"
                 ).toString();
         }
     );
 
 
-    // Rebuild file-system watching.
+    const bool appsChangedNow =
+        next != m_apps;
+
+
+    m_apps =
+        next;
+
+
+    const bool layoutChangedNow =
+        reconcileLayout();
+
+
+    if (
+        layoutChangedNow
+    ) {
+
+        saveLayout();
+    }
+
+
+    // Rebuild filesystem watcher.
 
     if (
         !m_watcher
@@ -681,7 +1228,8 @@ void AppRegistry::reload()
 
 
     if (
-        !directoriesToWatch.isEmpty()
+        !directoriesToWatch
+            .isEmpty()
     ) {
 
         m_watcher.addPaths(
@@ -691,7 +1239,8 @@ void AppRegistry::reload()
 
 
     if (
-        !filesToWatch.isEmpty()
+        !filesToWatch
+            .isEmpty()
     ) {
 
         m_watcher.addPaths(
@@ -701,19 +1250,26 @@ void AppRegistry::reload()
 
 
     if (
-        next == m_apps
+        appsChangedNow
     ) {
-        return;
+
+        emit appsChanged();
     }
 
 
-    m_apps =
-        next;
+    if (
+        layoutChangedNow ||
+        appsChangedNow
+    ) {
 
-
-    emit appsChanged();
+        emit layoutChanged();
+    }
 }
 
+
+// ============================================================
+// Find app
+// ============================================================
 
 QVariantMap AppRegistry::appById(
     const QString &id
@@ -730,17 +1286,425 @@ QVariantMap AppRegistry::appById(
 
         if (
             app.value(
-                QStringLiteral(
-                    "id"
-                )
+                "id"
             ).toString()
             ==
             id
         ) {
+
             return app;
         }
     }
 
 
     return {};
+}
+
+
+// ============================================================
+// Reorder Home
+// ============================================================
+
+bool AppRegistry::setHomeOrder(
+    const QVariantList &ids
+)
+{
+    QStringList requested;
+
+
+    for (
+        const QVariant &value :
+        ids
+    ) {
+
+        const QString id =
+            value.toString();
+
+
+        if (
+            m_homeOrder.contains(id) &&
+            !requested.contains(id)
+        ) {
+
+            requested.append(
+                id
+            );
+        }
+    }
+
+
+    // Keep anything that the caller did not send.
+
+    for (
+        const QString &id :
+        m_homeOrder
+    ) {
+
+        if (
+            !requested.contains(id)
+        ) {
+
+            requested.append(
+                id
+            );
+        }
+    }
+
+
+    if (
+        requested ==
+        m_homeOrder
+    ) {
+
+        return true;
+    }
+
+
+    m_homeOrder =
+        requested;
+
+
+    const bool ok =
+        saveLayout();
+
+
+    emit layoutChanged();
+
+
+    return ok;
+}
+
+
+// ============================================================
+// Reorder Dock
+// ============================================================
+
+bool AppRegistry::setDockOrder(
+    const QVariantList &ids
+)
+{
+    QStringList requested;
+
+
+    for (
+        const QVariant &value :
+        ids
+    ) {
+
+        const QString id =
+            value.toString();
+
+
+        if (
+            m_dockOrder.contains(id) &&
+            !requested.contains(id)
+        ) {
+
+            requested.append(
+                id
+            );
+        }
+    }
+
+
+    for (
+        const QString &id :
+        m_dockOrder
+    ) {
+
+        if (
+            !requested.contains(id)
+        ) {
+
+            requested.append(
+                id
+            );
+        }
+    }
+
+
+    while (
+        requested.size() > 4
+    ) {
+
+        requested.removeLast();
+    }
+
+
+    if (
+        requested ==
+        m_dockOrder
+    ) {
+
+        return true;
+    }
+
+
+    m_dockOrder =
+        requested;
+
+
+    const bool ok =
+        saveLayout();
+
+
+    emit layoutChanged();
+
+
+    return ok;
+}
+
+
+// ============================================================
+// Home -> Dock
+//
+// If dock has four apps, dropping onto a position swaps the
+// displaced app back into the original Home position.
+// ============================================================
+
+bool AppRegistry::moveAppToDock(
+    const QString &id,
+    int index
+)
+{
+    if (
+        appById(id).isEmpty()
+    ) {
+
+        return false;
+    }
+
+
+    // Already docked = reorder.
+
+    const int existingDock =
+        m_dockOrder.indexOf(
+            id
+        );
+
+
+    if (
+        existingDock >= 0
+    ) {
+
+        QStringList reordered =
+            m_dockOrder;
+
+
+        reordered.removeAt(
+            existingDock
+        );
+
+
+        index =
+            qBound(
+                0,
+                index,
+                reordered.size()
+            );
+
+
+        reordered.insert(
+            index,
+            id
+        );
+
+
+        m_dockOrder =
+            reordered;
+
+
+        const bool ok =
+            saveLayout();
+
+
+        emit layoutChanged();
+
+
+        return ok;
+    }
+
+
+    const int oldHomeIndex =
+        m_homeOrder.indexOf(
+            id
+        );
+
+
+    m_homeOrder.removeAll(
+        id
+    );
+
+
+    if (
+        m_dockOrder.size() < 4
+    ) {
+
+        index =
+            qBound(
+                0,
+                index,
+                m_dockOrder.size()
+            );
+
+
+        m_dockOrder.insert(
+            index,
+            id
+        );
+
+    } else {
+
+        index =
+            qBound(
+                0,
+                index,
+                m_dockOrder.size() - 1
+            );
+
+
+        const QString displaced =
+            m_dockOrder.at(
+                index
+            );
+
+
+        m_dockOrder[index] =
+            id;
+
+
+        const int homeIndex =
+            oldHomeIndex >= 0
+                ? qBound(
+                      0,
+                      oldHomeIndex,
+                      m_homeOrder.size()
+                  )
+                : m_homeOrder.size();
+
+
+        m_homeOrder.insert(
+            homeIndex,
+            displaced
+        );
+    }
+
+
+    const bool ok =
+        saveLayout();
+
+
+    emit layoutChanged();
+
+
+    return ok;
+}
+
+
+// ============================================================
+// Dock -> Home
+// ============================================================
+
+bool AppRegistry::moveAppToHome(
+    const QString &id,
+    int index
+)
+{
+    if (
+        appById(id).isEmpty()
+    ) {
+
+        return false;
+    }
+
+
+    const int existingHome =
+        m_homeOrder.indexOf(
+            id
+        );
+
+
+    if (
+        existingHome >= 0
+    ) {
+
+        QStringList reordered =
+            m_homeOrder;
+
+
+        reordered.removeAt(
+            existingHome
+        );
+
+
+        index =
+            qBound(
+                0,
+                index,
+                reordered.size()
+            );
+
+
+        reordered.insert(
+            index,
+            id
+        );
+
+
+        m_homeOrder =
+            reordered;
+
+
+        const bool ok =
+            saveLayout();
+
+
+        emit layoutChanged();
+
+
+        return ok;
+    }
+
+
+    m_dockOrder.removeAll(
+        id
+    );
+
+
+    index =
+        qBound(
+            0,
+            index,
+            m_homeOrder.size()
+        );
+
+
+    m_homeOrder.insert(
+        index,
+        id
+    );
+
+
+    const bool ok =
+        saveLayout();
+
+
+    emit layoutChanged();
+
+
+    return ok;
+}
+
+
+// ============================================================
+// Reset Home layout
+// ============================================================
+
+void AppRegistry::resetLayout()
+{
+    seedDefaultLayout();
+
+    saveLayout();
+
+    emit layoutChanged();
 }

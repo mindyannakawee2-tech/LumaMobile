@@ -162,6 +162,10 @@ Window {
         height: 42
 
 
+        enabled:
+            appSurface.active
+
+
         z: 3900
 
 
