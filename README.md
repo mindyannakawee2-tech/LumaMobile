@@ -5,6 +5,7 @@
 It is **not based on Android**. LumaMobile is building its own mobile shell, platform framework, services layer, SDK, package format, applications, and development VM while using proven open-source components underneath.
 
 > **Status:** Early development / experimental. LumaMobile is not ready for everyday use yet.
+> **Build State:** ```nightly-beta``` is the current build of LumaMobile.
 
 ## Quick start
 
