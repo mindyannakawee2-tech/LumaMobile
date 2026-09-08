@@ -52,6 +52,12 @@ INITRAMFS = (
 )
 
 
+SYSTEM_DISK = (
+    ROOT
+    / "output"
+    / "lumasystem.img"
+)
+
 DATA_DISK = (
     ROOT
     / "output"
@@ -144,14 +150,16 @@ class LumaVM(Gtk.ApplicationWindow):
         # The guest framebuffer is exactly 430x932.
         self.set_resizable(False)
 
+        # Fit the portrait phone comfortably on a 900p
+        # desktop while keeping the guest itself 430x932.
         self.set_default_size(
-            470,
-            1025
+            390,
+            850
         )
 
         self.set_size_request(
-            470,
-            1025
+            390,
+            850
         )
 
 
@@ -329,10 +337,13 @@ class LumaVM(Gtk.ApplicationWindow):
         )
 
 
-        # Native phone viewport.
+        # Host-side emulator viewport.
+        #
+        # Guest remains exactly 430x932.
+        # GtkVnc scales it for display only.
         aspect.set_size_request(
-            430,
-            932
+            353,
+            764
         )
 
         aspect.set_halign(
@@ -370,32 +381,37 @@ class LumaVM(Gtk.ApplicationWindow):
             GtkVnc.Display()
         )
 
-        # Native LumaMobile framebuffer dimensions.
+        # Host display size.
+        #
+        # This does NOT change LumaMobile's framebuffer.
         self.display.set_size_request(
-            430,
-            932
+            353,
+            764
         )
 
         try:
             self.display.set_force_size(
-                True
+                False
             )
         except Exception:
             pass
 
 
-        # Pixel-perfect 1:1 guest presentation.
+        # Scale the VM framebuffer to the emulator window.
+        #
+        # IMPORTANT:
+        # LumaMobile itself still renders at 430x932.
+        # Only host presentation is scaled.
         self.display.set_scaling(
-            False
+            True
         )
 
         self.display.set_keep_aspect_ratio(
             True
         )
 
-        # No filtering is required at native resolution.
         self.display.set_smoothing(
-            False
+            True
         )
 
 
@@ -582,20 +598,19 @@ class LumaVM(Gtk.ApplicationWindow):
             "-kernel",
             str(KERNEL),
 
-            "-initrd",
-            str(INITRAMFS),
-
-            "-append",
+             "-append",
             (
                 "console=ttyS0 "
-                "rdinit=/init "
+                "root=/dev/vda "
+                "rootfstype=ext4 "
+                "rw "
                 "net.ifnames=0 "
                 "loglevel=4 "
                 "video=Virtual-1:430x932@60"
             ),
 
             "-device",
-            "virtio-vga",
+            "virtio-vga,xres=430,yres=932",
 
             #
             # Absolute touchscreen-like pointing device.
@@ -610,6 +625,13 @@ class LumaVM(Gtk.ApplicationWindow):
             #
             # QEMU itself has no GUI.
             #
+
+            # LumaMobile system disk
+            "-drive",
+            f"file={SYSTEM_DISK},if=none,format=raw,id=lumasystem",
+
+            "-device",
+            "virtio-blk-pci,drive=lumasystem",
 
             # Persistent LumaMobile userdata
             "-drive",
@@ -761,10 +783,10 @@ class LumaVM(Gtk.ApplicationWindow):
             return
 
 
-        if not INITRAMFS.exists():
+        if not SYSTEM_DISK.exists():
 
             self.status.set_text(
-                "Initramfs missing"
+                "Luma system disk missing"
             )
 
             return
