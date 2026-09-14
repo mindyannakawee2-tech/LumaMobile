@@ -31,7 +31,7 @@ Item {
 
 
         if (value.length === 0) {
-            return "https://www.google.com"
+            return "https://duckduckgo.com"
         }
 
 
@@ -40,7 +40,7 @@ Item {
         ) {
 
             return (
-                "https://www.google.com/search?q=" +
+                "https://duckduckgo.com/?q=" +
                 encodeURIComponent(value)
             )
         }
@@ -61,7 +61,7 @@ Item {
 
 
         return (
-            "https://www.google.com/search?q=" +
+            "https://duckduckgo.com/?q=" +
             encodeURIComponent(value)
         )
     }
@@ -315,6 +315,10 @@ Item {
 
     WebEngineView {
 
+
+
+
+
         id: web
 
         anchors {
@@ -326,7 +330,7 @@ Item {
 
 
         url:
-            "https://www.google.com"
+            "https://duckduckgo.com"
 
         profile:
             browserProfile
@@ -713,7 +717,7 @@ Item {
 
                     onClicked:
                         web.url =
-                            "https://www.google.com"
+                            "https://duckduckgo.com"
                 }
             }
 

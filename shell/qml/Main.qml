@@ -511,6 +511,7 @@ Window {
 
         id: lumaKeyboard
 
+        property bool manuallyHidden: false
 
         anchors {
             left: parent.left
@@ -518,11 +519,30 @@ Window {
             bottom: parent.bottom
         }
 
-
         z: 5000
 
-
         visible:
-            LumaInput.inputActive
+            LumaInput.inputActive &&
+            manuallyHidden === false
+
+        onCloseRequested: {
+
+            // Move focus away from the editable field.
+            // This lets tapping the field later auto-show again.
+            lumaKeyboard.forceActiveFocus()
+
+            manuallyHidden = true
+        }
+
+        Connections {
+
+            target: LumaInput
+
+            function onInputActiveChanged() {
+
+                if (LumaInput.inputActive)
+                    lumaKeyboard.manuallyHidden = false
+            }
+        }
     }
 }
