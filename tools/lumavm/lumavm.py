@@ -593,7 +593,7 @@ class LumaVM(Gtk.ApplicationWindow):
             "4,sockets=1,cores=4,threads=1",
 
             "-m",
-            "2048",
+            "4096",
 
             "-kernel",
             str(KERNEL),
@@ -611,6 +611,26 @@ class LumaVM(Gtk.ApplicationWindow):
 
             "-device",
             "virtio-vga,xres=430,yres=932",
+
+            #
+            # LumaMobile audio
+            #
+
+            "-audiodev",
+            "pa,id=lumaaudio",
+
+            "-device",
+            "ich9-intel-hda",
+
+            "-device",
+            "hda-duplex,audiodev=lumaaudio",
+
+            #
+            # LumaDirect host <-> guest transport.
+            #
+            # Guest CID 42 is reserved for the LumaMobile VM.
+            #
+
 
             #
             # Absolute touchscreen-like pointing device.

@@ -320,11 +320,13 @@ Item {
 
     Timer {
 
-        interval: 10000
+        // SystemBackend talks directly to Linux.
+        // Full status refresh is intentionally slower because
+        // some backend queries invoke real system utilities.
+        interval: 30000
 
         repeat: true
         running: true
-
 
         onTriggered:
             root.refreshSystem()
