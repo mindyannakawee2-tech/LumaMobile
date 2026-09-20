@@ -86,6 +86,14 @@ SERIAL_LOG = (
 )
 
 
+BOOT_SPLASH = (
+    ROOT
+    / "assets"
+    / "boot"
+    / "lumamobile-splash.bmp"
+)
+
+
 VNC_DISPLAY = 7
 VNC_PORT = 5900 + VNC_DISPLAY
 
@@ -586,6 +594,10 @@ class LumaVM(Gtk.ApplicationWindow):
             "-machine",
             "q35",
 
+            # LumaMobile firmware-stage splash.
+            "-boot",
+            f"menu=off,splash={BOOT_SPLASH},splash-time=450",
+
             "-cpu",
             "host",
 
@@ -605,7 +617,18 @@ class LumaVM(Gtk.ApplicationWindow):
                 "rootfstype=ext4 "
                 "rw "
                 "net.ifnames=0 "
-                "loglevel=4 "
+                "loglevel=0 "
+                "delayacct=off "
+                "nmi_watchdog=0 "
+                "audit=0 "
+                "preempt=full "
+                "quiet "
+                "splash "
+                "systemd.show_status=false "
+                "rd.systemd.show_status=false "
+                "vt.global_cursor_default=0 "
+                "logo.nologo "
+                "plymouth.ignore-serial-consoles "
                 "video=Virtual-1:430x932@60"
             ),
 

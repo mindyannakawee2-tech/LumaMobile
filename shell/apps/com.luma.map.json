@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.luma.map",
+  "title": "Map",
+  "glyph": "M",
+  "accent": "#4FA477",
+  "icon": "../qml/assets/icons/map.svg",
+  "entry": "../qml/MapApp.qml",
+  "order": 55,
+  "home": true,
+  "dock": false
+}
