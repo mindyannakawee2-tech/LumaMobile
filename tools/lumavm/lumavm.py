@@ -633,7 +633,7 @@ class LumaVM(Gtk.ApplicationWindow):
             ),
 
             "-device",
-            "virtio-vga,xres=430,yres=932",
+            "virtio-vga-gl,xres=430,yres=932",
 
             #
             # LumaMobile audio
@@ -691,7 +691,7 @@ class LumaVM(Gtk.ApplicationWindow):
             "virtio-net-pci,netdev=lumanet",
 
             "-display",
-            "none",
+            "egl-headless,rendernode=/dev/dri/renderD128",
 
             "-vnc",
             f"127.0.0.1:{VNC_DISPLAY}",
